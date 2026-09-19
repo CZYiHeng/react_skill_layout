@@ -1,0 +1,17 @@
+{
+  "base_url": "https://api.kimi.com/coding/v1",
+  "api_key": "<在此填入你的 key>",
+  "model": "kimi-k2.7",
+  "max_rounds": 10,
+  "step_timeout_sec": 120,
+  "show_reasoning": true,
+  "max_context_messages": 12,
+  "enable_shell_exec": false,
+  "enable_file_write": false,
+  "exec_timeout_sec": 30,
+  "sandbox_shell": false,
+  "sandbox_integrity_low": false,
+  "gate_mode": "plan",
+  "work_dir": "",
+  "allow_outside_work_dir": false
+}

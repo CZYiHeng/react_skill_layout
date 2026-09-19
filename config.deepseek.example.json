@@ -1,0 +1,12 @@
+{
+  "base_url": "https://api.deepseek.com",
+  "api_key": "<在此填入你的 api_key>",
+  "model": "deepseek-chat",
+  "max_rounds": 12,
+  "step_timeout_sec": 120,
+  "show_reasoning": true,
+  "max_context_messages": 16,
+  "enable_shell_exec": false,
+  "enable_file_write": true,
+  "exec_timeout_sec": 30
+}

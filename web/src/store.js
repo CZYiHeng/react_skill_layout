@@ -1,0 +1,127 @@
+// 会话状态机：用 useReducer 消费 SSE 事件流，不引额外状态库。
+//
+// 事件时序（后端保证）：token*(某步骤流式) → step(该步骤定稿) → gate(等待人工步进)
+// 故「流式缓冲 live」在收到 step 事件时定稿并清空。
+
+export const initialState = {
+  sessionId: null,
+  config: null, // { model, max_rounds, shell, file_write, sandbox, gate_mode }
+  binds: null, // { think: bool, plan: bool, ... }
+  status: 'idle', // idle | running | done | error | aborted
+  items: [], // 已定稿条目
+  live: null, // { action, text } 正在流式输出
+  awaiting: null, // null | 'gate' | 'ask'
+  gateMode: 'plan', // plan=计划批准一次 | step=每步骤拦一次 | auto=仅必须拦时
+  gateReason: '', // 本次拦截的原因（后端下发）
+  gateCount: 0, // 本次任务被打断次数
+  workDir: '', // 工作目录（项目内子目录，空=项目根目录）
+  allowOutside: false, // 是否允许 work_dir 指向项目根目录之外（需绝对路径）
+  error: null,
+  lastResult: null,
+}
+
+function pushItem(state, item) {
+  return { ...state, items: [...state.items, { ...item, id: state.items.length + 1 }] }
+}
+
+export function reducer(state, action) {
+  switch (action.type) {
+    case 'session': {
+      const mode = (action.config && action.config.gate_mode) || state.gateMode
+      return {
+        ...state,
+        sessionId: action.sessionId,
+        config: action.config || null,
+        binds: action.binds || null,
+        gateMode: mode,
+        workDir: (action.config && action.config.work_dir) || state.workDir,
+        allowOutside: action.config
+          ? !!action.config.allow_outside_work_dir
+          : state.allowOutside,
+        error: null,
+      }
+    }
+
+    case 'gate_mode':
+      return { ...state, gateMode: action.gateMode }
+
+    case 'work_dir':
+      return { ...state, workDir: action.workDir }
+
+    case 'allow_outside':
+      return { ...state, allowOutside: action.allowOutside }
+
+    case 'task_start':
+      return { ...initialState, sessionId: state.sessionId, config: state.config,
+               binds: state.binds, status: 'running', gateMode: state.gateMode,
+               workDir: state.workDir, allowOutside: state.allowOutside }
+
+    case 'reset':
+      return { ...initialState, sessionId: state.sessionId, config: state.config,
+               binds: state.binds, gateMode: state.gateMode, workDir: state.workDir,
+               allowOutside: state.allowOutside }
+
+    case 'live_token': {
+      const a = action.action
+      const prev = state.live && state.live.action === a ? state.live.text : ''
+      return { ...state, live: { action: a, text: prev + action.text } }
+    }
+
+    case 'event': {
+      const e = action.event
+      switch (e.type) {
+        case 'round':
+          return pushItem(state, { kind: 'round', n: e.round_no })
+
+        case 'step': {
+          const streamed = state.live && state.live.action === e.action ? state.live.text : null
+          return pushItem({ ...state, live: null }, {
+            kind: 'step',
+            action: e.action,
+            text: e.text,
+            raw: e.raw,
+            streamed,
+            elapsed: e.elapsed_sec,
+            tokens: e.tokens,
+            reasoning: e.reasoning,
+          })
+        }
+
+        case 'solution':
+          return pushItem(state, { kind: 'solution', text: e.text })
+
+        case 'ask':
+          return { ...pushItem(state, { kind: 'ask', text: e.text }), awaiting: 'ask' }
+
+        case 'gate':
+          return { ...state, awaiting: 'gate', gateReason: e.reason || '',
+                   gateCount: state.gateCount + 1 }
+
+        case 'info':
+        case 'warn':
+        case 'error':
+        case 'success':
+          return pushItem(state, { kind: 'notice', level: e.type, text: e.text })
+
+        case 'done':
+          return { ...state, status: 'done', awaiting: null, live: null,
+                   lastResult: { status: e.status, rounds: e.rounds, final_text: e.final_text } }
+
+        default:
+          return state
+      }
+    }
+
+    case 'consumed': // 人工指令已发出（步进 / 回答），收起控制面板
+      return { ...state, awaiting: null }
+
+    case 'status':
+      return { ...state, status: action.status }
+
+    case 'error':
+      return { ...state, status: 'error', error: action.message, awaiting: null, live: null }
+
+    default:
+      return state
+  }
+}

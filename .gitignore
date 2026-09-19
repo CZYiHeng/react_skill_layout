@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+
+# 配置文件：真实配置（含密钥）一律不入库；*.example.json 模板保留可入库
+/config*.json
+!/config*.example.json
+
+# 本机执行器落地产物（enable_file_write 打开时）
+/output/
+
+# 前端（web/）：依赖与构建产物不入库，只留源码
+web/node_modules/
+web/dist/
+# 会话导出纪要（/save 产物，48KB 级，勿入库）
+/session_*.md

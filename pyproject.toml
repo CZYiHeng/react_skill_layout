@@ -1,0 +1,19 @@
+[project]
+name = "react-agent"
+version = "0.1.0"
+description = "显式 ReAct 协议的终端 agent：推理框架由你掌控，skill 目录约定绑定到认知阶段槽位"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "rich>=14",
+    "openai>=2",
+    "markdown-it-py>=3",
+    "mcp<2",
+    # Web API（react/webapi.py）：此前仅作为 mcp 的传递依赖存在，
+    # 隐式依赖会被上游升级抽走，故在此显式声明。
+    "starlette>=0.40",
+    "uvicorn>=0.30",
+]
+
+[tool.uv]
+package = false
