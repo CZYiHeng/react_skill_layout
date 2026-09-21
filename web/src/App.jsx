@@ -375,6 +375,7 @@ export default function App() {
 
       {showSettings ? (
         <SettingsModal
+          allowOutside={state.allowOutside}
           onClose={() => setShowSettings(false)}
           onSaved={() => {
             // 配置已写回文件：只更新 config 相关字段，不动 items/live/awaiting

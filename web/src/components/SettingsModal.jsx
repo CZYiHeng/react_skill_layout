@@ -6,7 +6,7 @@ import * as api from '../api'
 
 const GATE_MODES = ['plan', 'step', 'auto', 'phase']
 
-export default function SettingsModal({ onClose, onSaved }) {
+export default function SettingsModal({ onClose, onSaved, allowOutside: currentAllowOutside }) {
   const [form, setForm] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -17,7 +17,12 @@ export default function SettingsModal({ onClose, onSaved }) {
   useEffect(() => {
     api.getConfig()
       .then((data) => {
-        setForm(data.config || {})
+        const cfg = { ...(data.config || {}) }
+        // 左侧栏勾选的放行开关可能还没落盘，用当前前端状态覆盖，避免保存时回写旧值
+        if (currentAllowOutside !== undefined) {
+          cfg.allow_outside_work_dir = currentAllowOutside
+        }
+        setForm(cfg)
         setError('')
       })
       .catch((e) => setError(e.message))
