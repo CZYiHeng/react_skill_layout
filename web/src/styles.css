@@ -521,3 +521,54 @@ button { font-family: inherit; }
   .sidebar .side-card .field { display: none; }
   .examples { grid-template-columns: 1fr; }
 }
+
+/* ===== 设置页：子导航布局（inline 标签页模式） ===== */
+.settings-pane {
+  display: flex; padding: 0; max-width: 1000px;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+}
+.set-nav {
+  width: 172px; flex-shrink: 0; border-right: 1px solid var(--border);
+  padding: 22px 12px; display: flex; flex-direction: column; gap: 2px;
+}
+.set-nav button {
+  text-align: left; border: none; background: none; cursor: pointer;
+  padding: 9px 12px; border-radius: 8px; font-size: 13px;
+  color: var(--muted); font-weight: 500;
+}
+.set-nav button:hover { background: #f8fafc; color: var(--text); }
+.set-nav button.on { background: var(--primary-bg); color: var(--primary); font-weight: 600; }
+.set-content { flex: 1; padding: 26px 30px; overflow-y: auto; min-width: 0; }
+.set-content h2 { font-size: 18px; margin: 0 0 4px; }
+.sec-desc { font-size: 12px; color: var(--muted); margin: 0 0 22px; }
+.set-content .set-field { margin-bottom: 15px; }
+.set-content .set-toggle { margin-bottom: 10px; }
+.save-bar {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  margin-top: 26px; padding-top: 16px; border-top: 1px solid var(--border);
+}
+
+/* 档案折叠卡片（details） */
+.profile {
+  border: 1px solid var(--border); border-radius: 12px;
+  margin-bottom: 12px; overflow: hidden; background: #fff;
+}
+.profile-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; cursor: pointer; list-style: none;
+  background: var(--surface-2); user-select: none;
+}
+.profile-head::-webkit-details-marker { display: none; }
+.profile-head:hover { background: #f6f7fb; }
+.profile[open] .profile-head { border-bottom: 1px solid var(--border); }
+.profile-title { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 14px; }
+.profile-chev { color: var(--faint); font-size: 12px; transition: transform .15s; }
+.profile[open] .profile-chev { transform: rotate(180deg); }
+.badge-current {
+  font-size: 11px; font-weight: 600; color: #047857;
+  background: #ecfdf5; border-radius: 999px; padding: 2px 9px;
+}
+.profile-body { padding: 14px 16px 16px; }
+.profile-body .set-field { margin-bottom: 12px; }

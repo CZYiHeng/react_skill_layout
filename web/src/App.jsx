@@ -440,6 +440,7 @@ export default function App() {
           </div>
         ) : null}
 
+        {view === 'chat' ? (
         <footer className="controls">
           {state.awaiting === 'gate' ? (
             <GateBar
@@ -460,6 +461,7 @@ export default function App() {
           ) : null}
           <ChatInput disabled={busy || state.awaiting !== null} onSubmit={sendTask} gateMode={state.gateMode} />
         </footer>
+        ) : null}
       </div>
 
       {false ? (
