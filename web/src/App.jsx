@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useReducer, useRef, useState } from 'react'
 
 import * as api from './api'
 import AskPanel from './components/AskPanel'
@@ -46,24 +46,32 @@ const EXAMPLE_TASKS = [
   { title: '生成需求文档', desc: '根据描述输出结构化需求与验收标准' },
 ]
 
-// 把扁平 items 按 round 事件分组：第一组为 round 之前的条目（通常为空）。
+// 把扁平 items 按「任务 + round」分组：不同任务即使 round_no 都从 1 开始也不合并。
+// kind === 'task' 是任务头条目，不进任何组，只提供该任务的标题。
 function groupByRound(items) {
   const groups = []
   let cur = null
+  const titles = {}
   for (const it of items) {
+    const t = it.task ?? 0
+    if (it.kind === 'task') {
+      titles[t] = it.text
+      continue
+    }
     if (it.kind === 'round') {
-      // 同 n 的重复 round 合并：ASK 轮后后端 round_no 回退会重发同一 n 的 round 事件
-      if (!cur || cur.n !== it.n) {
-        cur = { n: it.n, items: [] }
+      // 同一任务内同 n 的重复 round 才合并：ASK 轮后后端 round_no 回退会重发同一 n
+      if (!cur || cur.task !== t || cur.n !== it.n) {
+        cur = { task: t, n: it.n, items: [] }
         groups.push(cur)
       }
     } else if (cur) {
       cur.items.push(it)
     } else {
-      if (!groups[0] || !groups[0].pre) groups.unshift({ pre: true, items: [] })
+      if (!groups[0] || !groups[0].pre) groups.unshift({ pre: true, task: t, items: [] })
       groups[0].items.push(it)
     }
   }
+  for (const g of groups) g.title = titles[g.task] || ''
   return groups
 }
 
@@ -148,6 +156,7 @@ export default function App() {
         gateMode: state.gateMode,
         workDir: state.workDir,
         allowOutside: state.allowOutside,
+        taskSeq: state.taskSeq,
       },
     })
   }, [state.sessionId, state.items, state.status, state.lastResult, state.awaiting,
@@ -181,7 +190,7 @@ export default function App() {
   const sendTask = useCallback(
     async (task) => {
       if (!state.sessionId) return
-      dispatch({ type: 'task_start' })
+      dispatch({ type: 'task_start', task })
       setManualCollapsed(new Set())
       stickRef.current = true
       setShowBack(false)
@@ -259,14 +268,17 @@ export default function App() {
 
   const busy = state.status === 'running'
   const groups = groupByRound(state.items)
-  const lastRoundN = groups.length && !groups[groups.length - 1].pre
-    ? groups[groups.length - 1].n
-    : null
-  const toggleRound = (n) => {
+  // 最后一个非 pre 组的索引（可能跨多个任务，不能只按 round_no 判断）
+  let lastGroupIdx = -1
+  for (let i = groups.length - 1; i >= 0; i--) {
+    if (!groups[i].pre) { lastGroupIdx = i; break }
+  }
+  const gkey = (g) => `${g.task}-${g.n}`
+  const toggleRound = (key) => {
     setManualCollapsed((prev) => {
       const next = new Set(prev)
-      if (next.has(n)) next.delete(n)
-      else next.add(n)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
       return next
     })
   }
@@ -276,8 +288,10 @@ export default function App() {
     if (g.pre) {
       return g.items.map((it) => renderItem(it))
     }
-    const isLast = g.n === lastRoundN
-    const collapsed = manualCollapsed.has(g.n) ? true : !isLast
+    const isLast = idx === lastGroupIdx
+    const collapsed = manualCollapsed.has(gkey(g)) ? true : !isLast
+    // 该任务的第一个轮次组：上方插任务头
+    const firstOfTask = groups.findIndex((x) => !x.pre && x.task === g.task) === idx
 
     // 该轮已定稿的阶段 + 当前流式阶段，推导 flow 进度条状态
     const doneStages = new Set(
@@ -289,8 +303,16 @@ export default function App() {
       .reduce((sum, it) => sum + it.elapsed, 0)
 
     return (
-      <section key={`r-${g.n}`} className={`round-group${collapsed ? ' closed' : ' open'}`}>
-        <div className="round-header" onClick={() => toggleRound(g.n)}>
+      <Fragment key={`r-${g.task}-${g.n}`}>
+      {firstOfTask ? (
+        <div className="task-head">
+          <span className="task-badge">任务 {g.task}</span>
+          <span className="task-title" title={g.title}>{g.title || '未命名任务'}</span>
+          <span className="task-rule" />
+        </div>
+      ) : null}
+      <section className={`round-group${collapsed ? ' closed' : ' open'}`}>
+        <div className="round-header" onClick={() => toggleRound(gkey(g))}>
           <svg className="chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 6 15 12 9 18"></polyline></svg>
           <span className="round-no">Round {g.n}</span>
           <div className="flow">
@@ -328,6 +350,7 @@ export default function App() {
           ) : null}
         </div>
       </section>
+      </Fragment>
     )
   }
 

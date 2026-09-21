@@ -576,3 +576,22 @@ button { font-family: inherit; }
 }
 .profile-body { padding: 14px 16px 16px; }
 .profile-body .set-field { margin-bottom: 12px; }
+
+/* ===== 任务分隔头（同一 session 内多个任务） ===== */
+.task-head {
+  display: flex; align-items: center; gap: 10px;
+  margin: 24px 0 12px;
+}
+.task-head:first-child { margin-top: 4px; }
+.task-badge {
+  flex-shrink: 0; font-size: 11px; font-weight: 700; letter-spacing: 0.02em;
+  color: var(--primary); background: var(--primary-bg);
+  border-radius: 999px; padding: 3px 11px;
+}
+.task-title {
+  flex-shrink: 1; min-width: 0;
+  font-size: 13px; font-weight: 600; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: 70%;
+}
+.task-rule { flex: 1; height: 1px; background: var(--border); }

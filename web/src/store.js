@@ -19,10 +19,13 @@ export const initialState = {
   error: null,
   lastResult: null,
   totalTokens: 0,
+  taskSeq: 0, // 任务序号：每发一个新任务 +1，用于隔离不同任务的 Round 分组
 }
 
 function pushItem(state, item) {
-  return { ...state, items: [...state.items, { ...item, id: state.items.length + 1 }] }
+  // 条目归属当前任务（item 自带 task 时除外），刷新恢复的旧条目无 task，分组时归 0
+  const tagged = { ...item, id: state.items.length + 1, task: item.task ?? state.taskSeq }
+  return { ...state, items: [...state.items, tagged] }
 }
 
 export function reducer(state, action) {
@@ -62,6 +65,7 @@ export function reducer(state, action) {
         allowOutside: !!s.allowOutside,
         error: null,
         live: null,
+        taskSeq: s.taskSeq || 0,
       }
     }
 
@@ -88,10 +92,13 @@ export function reducer(state, action) {
     case 'allow_outside':
       return { ...state, allowOutside: action.allowOutside }
 
-    case 'task_start':
+    case 'task_start': {
       // 保留历史 items，新任务内容追加在旧记录之后，便于回看排查
-      return { ...state, live: null, awaiting: null, status: 'running', error: null,
-               lastResult: null, totalTokens: 0 }
+      const taskSeq = state.taskSeq + 1
+      const next = { ...state, taskSeq, live: null, awaiting: null, status: 'running',
+                     error: null, lastResult: null, totalTokens: 0, gateCount: 0 }
+      return action.task ? pushItem(next, { kind: 'task', text: action.task }) : next
+    }
 
     case 'reset':
       return { ...initialState, sessionId: state.sessionId, config: state.config,
