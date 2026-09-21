@@ -1,7 +1,7 @@
 // 设置弹窗：页面上读写 config.json。
 // 打开时 GET /api/config 拉当前文件值，保存时 PUT 合并写回；
 // 后端每个任务开始都会重读配置，故保存后下一个任务即生效，无需重启。
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import * as api from '../api'
 
 const GATE_MODES = ['plan', 'step', 'auto', 'phase']
@@ -12,6 +12,7 @@ export default function SettingsModal({ onClose, onSaved }) {
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const [showKey, setShowKey] = useState(false)
+  const maskRef = useRef(null)
 
   useEffect(() => {
     api.getConfig()
@@ -22,6 +23,11 @@ export default function SettingsModal({ onClose, onSaved }) {
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false))
   }, [])
+
+  // 只在点击遮罩本身（而非弹窗内容）时关闭，避免点输入框/下拉框误关
+  const onMaskClick = (e) => {
+    if (e.target === maskRef.current) onClose()
+  }
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }))
 
@@ -68,8 +74,8 @@ export default function SettingsModal({ onClose, onSaved }) {
   )
 
   return (
-    <div className="modal-mask" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-mask" ref={maskRef} onClick={onMaskClick}>
+      <div className="modal">
         <div className="modal-head">
           <h2>设置</h2>
           <button className="modal-close" onClick={onClose}>✕</button>
