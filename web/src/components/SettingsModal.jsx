@@ -18,7 +18,6 @@ export default function SettingsModal({ onClose, onSaved, allowOutside: currentA
     api.getConfig()
       .then((data) => {
         const cfg = { ...(data.config || {}) }
-        // 左侧栏勾选的放行开关可能还没落盘，用当前前端状态覆盖，避免保存时回写旧值
         if (currentAllowOutside !== undefined) {
           cfg.allow_outside_work_dir = currentAllowOutside
         }
@@ -29,27 +28,46 @@ export default function SettingsModal({ onClose, onSaved, allowOutside: currentA
       .finally(() => setLoading(false))
   }, [])
 
-
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }))
+
+  // 更新某个档案的字段
+  const updateProfile = (idx, field, value) => {
+    setForm((f) => {
+      const profiles = [...(f.profiles || [])]
+      profiles[idx] = { ...profiles[idx], [field]: value }
+      return { ...f, profiles }
+    })
+  }
+
+  const addProfile = () => {
+    const name = prompt('新档案名称（如 deepseek / kimi / qwen）：')
+    if (!name) return
+    setForm((f) => ({
+      ...f,
+      profiles: [...(f.profiles || []), { name, base_url: '', api_key: '', model: '', timeout_sec: 120 }],
+    }))
+  }
+
+  const removeProfile = (idx) => {
+    const p = form.profiles[idx]
+    if (!confirm(`删除档案 "${p.name}"？`)) return
+    setForm((f) => {
+      const profiles = (f.profiles || []).filter((_, i) => i !== idx)
+      const patch = { ...f, profiles }
+      if (f.active_profile === p.name) patch.active_profile = ''
+      return patch
+    })
+  }
+
+  const useProfile = (name) => {
+    set('active_profile', name)
+  }
 
   const save = async () => {
     setSaving(true)
     setError('')
     try {
-      // 把当前模型字段写回选中的 profile
-      const profiles = [...(form.profiles || [])]
-      const profData = {
-        base_url: form.base_url || '',
-        api_key: form.api_key || '',
-        model: form.model || '',
-        timeout_sec: form.step_timeout_sec || 120,
-      }
-      if (form.active_profile) {
-        const idx = profiles.findIndex(p => p.name === form.active_profile)
-        if (idx >= 0) profiles[idx] = { ...profiles[idx], ...profData }
-        else profiles.push({ name: form.active_profile, ...profData })
-      }
-      await api.saveConfig({ ...form, profiles })
+      await api.saveConfig(form)
       onSaved?.()
       onClose()
     } catch (e) {
@@ -87,6 +105,8 @@ export default function SettingsModal({ onClose, onSaved, allowOutside: currentA
     </label>
   )
 
+  const profiles = form?.profiles || []
+
   return (
     <div className="modal-mask" ref={maskRef}>
       <div className="modal">
@@ -102,62 +122,73 @@ export default function SettingsModal({ onClose, onSaved, allowOutside: currentA
         ) : form ? (
           <div className="modal-body">
             <div className="set-group">
-              <h3>模型</h3>
-              <label className="set-field">
-                <span>当前档案</span>
-                <div className="key-row">
-                  <select value={form.active_profile ?? ''} onChange={(e) => {
-                    const name = e.target.value
-                    const prof = (form.profiles || []).find(p => p.name === name)
-                    set('active_profile', name)
-                    if (prof) {
-                      set('base_url', prof.base_url || '')
-                      set('api_key', prof.api_key || '')
-                      set('model', prof.model || '')
-                    }
-                  }}>
-                    <option value="">（默认/单模型）</option>
-                    {(form.profiles || []).map(p => (
-                      <option key={p.name} value={p.name}>{p.name}</option>
-                    ))}
-                  </select>
-                  <button type="button" className="btn btn-sm" onClick={() => {
-                    const name = prompt('新档案名称：')
-                    if (!name) return
-                    const profiles = [...(form.profiles || []), { name, base_url: '', api_key: '', model: '', timeout_sec: 120 }]
-                    set('profiles', profiles)
-                    set('active_profile', name)
-                    set('base_url', '')
-                    set('api_key', '')
-                    set('model', '')
-                  }}>+ 新建</button>
-                  {form.active_profile ? (
-                    <button type="button" className="btn btn-sm" onClick={() => {
-                      if (!confirm(`删除档案 "${form.active_profile}"？`)) return
-                      const profiles = (form.profiles || []).filter(p => p.name !== form.active_profile)
-                      set('profiles', profiles)
-                      set('active_profile', '')
-                    }}>删除</button>
-                  ) : null}
-                </div>
-                <small>切换档案只影响新任务；保存时当前地址/Key/模型会写回该档案</small>
-              </label>
-              {strField('base_url', 'API 地址', 'OpenAI 兼容端点，如 https://api.deepseek.com')}
+              <h3>模型档案</h3>
+              {profiles.length === 0 ? (
+                <small style={{ display: 'block', marginBottom: 8 }}>
+                  还没有档案。下面的"默认模型"是兼容旧配置；点"+ 新建档案"添加多模型。
+                </small>
+              ) : null}
+
+              {profiles.map((p, i) => {
+                const active = form.active_profile === p.name
+                return (
+                  <div key={p.name} className={`profile-card${active ? ' active' : ''}`}>
+                    <div className="profile-card-head">
+                      <span className="profile-name">{p.name}</span>
+                      <div>
+                        {!active ? (
+                          <button type="button" className="btn btn-sm" onClick={() => useProfile(p.name)}>使用</button>
+                        ) : (
+                          <span className="profile-badge">当前使用</span>
+                        )}
+                        <button type="button" className="btn btn-sm btn-danger" onClick={() => removeProfile(i)}>删除</button>
+                      </div>
+                    </div>
+                    <label className="set-field">
+                      <span>API 地址</span>
+                      <input type="text" value={p.base_url || ''}
+                        onChange={(e) => updateProfile(i, 'base_url', e.target.value)}
+                        placeholder="https://api.deepseek.com" />
+                    </label>
+                    <label className="set-field">
+                      <span>API Key</span>
+                      <div className="key-row">
+                        <input type={showKey ? 'text' : 'password'} value={p.api_key || ''}
+                          onChange={(e) => updateProfile(i, 'api_key', e.target.value)} />
+                        <button type="button" className="btn btn-sm" onClick={() => setShowKey((v) => !v)}>
+                          {showKey ? '隐藏' : '显示'}
+                        </button>
+                      </div>
+                    </label>
+                    <label className="set-field">
+                      <span>模型名</span>
+                      <input type="text" value={p.model || ''}
+                        onChange={(e) => updateProfile(i, 'model', e.target.value)}
+                        placeholder="deepseek-chat / kimi-k2 / qwen-plus" />
+                    </label>
+                  </div>
+                )
+              })}
+
+              <button type="button" className="btn btn-sm" onClick={addProfile}>+ 新建档案</button>
+            </div>
+
+            <div className="set-group">
+              <h3>默认模型（无档案时使用）</h3>
+              {strField('base_url', 'API 地址', 'OpenAI 兼容端点')}
               <label className="set-field">
                 <span>API Key</span>
                 <div className="key-row">
-                  <input
-                    type={showKey ? 'text' : 'password'}
+                  <input type={showKey ? 'text' : 'password'}
                     value={form.api_key ?? ''}
-                    onChange={(e) => set('api_key', e.target.value)}
-                  />
+                    onChange={(e) => set('api_key', e.target.value)} />
                   <button type="button" className="btn btn-sm" onClick={() => setShowKey((v) => !v)}>
                     {showKey ? '隐藏' : '显示'}
                   </button>
                 </div>
               </label>
-              {strField('model', '模型名', '如 deepseek-chat / kimi-k2.7')}
-              {strField('plan_model', '计划模型', '空 = 与 model 相同；填推理模型可提升规划质量')}
+              {strField('model', '模型名')}
+              {strField('plan_model', '计划模型', '空 = 与默认模型相同')}
               {intField('plan_timeout_sec', '计划超时(秒)')}
             </div>
 
