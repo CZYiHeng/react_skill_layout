@@ -82,7 +82,7 @@ export default function App() {
   const stickRef = useRef(true)          // 是否贴底（决定新内容是否自动跟随）
   const [showBack, setShowBack] = useState(false)  // 是否显示"回到底部"按钮
   const [view, setView] = useState('chat')  // chat | settings | review
-  const [manualCollapsed, setManualCollapsed] = useState(() => new Set())  // 用户手动折叠的轮次 n
+  const [manualCollapsed, setManualCollapsed] = useState(() => new Set())  // 手动覆盖默认展开态的轮次键（task-n）
 
   // 打开事件流：仅贴底自动跟随由 onScroll 处理；统一在此封装便于复用
   const connectStream = useCallback((sessionId) => {
@@ -289,7 +289,10 @@ export default function App() {
       return g.items.map((it) => renderItem(it))
     }
     const isLast = idx === lastGroupIdx
-    const collapsed = manualCollapsed.has(gkey(g)) ? true : !isLast
+    // 默认仅最新轮展开；manualCollapsed 记录「与默认相反」的手动覆盖，
+    // 故旧轮可手动展开、最新轮可手动折叠
+    const defaultCollapsed = !isLast
+    const collapsed = manualCollapsed.has(gkey(g)) ? !defaultCollapsed : defaultCollapsed
     // 该任务的第一个轮次组：上方插任务头
     const firstOfTask = groups.findIndex((x) => !x.pre && x.task === g.task) === idx
 
