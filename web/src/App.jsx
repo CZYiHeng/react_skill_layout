@@ -31,6 +31,21 @@ function saveSession(data) {
   }
 }
 
+// 五阶段固定顺序与配色（与 styles.css 变量 / Sidebar 槽位一致）
+const STAGES = [
+  { key: 'think', label: 'THINK', color: 'var(--think)' },
+  { key: 'plan', label: 'PLAN', color: 'var(--plan)' },
+  { key: 'act', label: 'ACT', color: 'var(--act)' },
+  { key: 'observe', label: 'OBSERVE', color: 'var(--observe)' },
+  { key: 'verify', label: 'VERIFY', color: 'var(--verify)' },
+]
+
+const EXAMPLE_TASKS = [
+  { title: '解析代码框架', desc: '分析一个项目目录的模块结构与调用链' },
+  { title: '修复前端 Bug', desc: '定位报错原因，修改并验证构建' },
+  { title: '生成需求文档', desc: '根据描述输出结构化需求与验收标准' },
+]
+
 // 把扁平 items 按 round 事件分组：第一组为 round 之前的条目（通常为空）。
 function groupByRound(items) {
   const groups = []
@@ -262,15 +277,49 @@ export default function App() {
       return g.items.map((it) => renderItem(it))
     }
     const isLast = g.n === lastRoundN
-    const manuallyOpen = manualCollapsed.has(g.n) ? false : isLast
     const collapsed = manualCollapsed.has(g.n) ? true : !isLast
+
+    // 该轮已定稿的阶段 + 当前流式阶段，推导 flow 进度条状态
+    const doneStages = new Set(
+      g.items.filter((it) => it.kind === 'step').map((it) => it.action),
+    )
+    const activeStage = isLast && state.live ? state.live.action : null
+    const roundElapsed = g.items
+      .filter((it) => it.kind === 'step' && typeof it.elapsed === 'number')
+      .reduce((sum, it) => sum + it.elapsed, 0)
+
     return (
       <section key={`r-${g.n}`} className={`round-group${collapsed ? ' closed' : ' open'}`}>
         <div className="round-header" onClick={() => toggleRound(g.n)}>
           <svg className="chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 6 15 12 9 18"></polyline></svg>
-          Round {g.n}
-          {isLast ? <span className="round-live" title="当前轮" /> : null}
-          <span className="round-summary">{isLast ? '进行中' : '已完成'}</span>
+          <span className="round-no">Round {g.n}</span>
+          <div className="flow">
+            {STAGES.map((s, i) => {
+              const isActive = activeStage === s.key
+              const isDone = !isActive && doneStages.has(s.key)
+              const cls = isActive ? 'flow-step active' : isDone ? 'flow-step done' : 'flow-step'
+              return (
+                <span key={s.key} style={{ display: 'contents' }}>
+                  <span className={cls} style={isActive || isDone ? { color: s.color } : undefined}>
+                    <span
+                      className="fd"
+                      style={isActive || isDone ? { background: s.color, color: '#fff' } : undefined}
+                    >
+                      {isActive ? '▶' : isDone ? '✓' : i + 1}
+                    </span>
+                    {s.label}
+                  </span>
+                  {i < STAGES.length - 1 ? (
+                    <span className={`flow-line${isDone ? ' done' : ''}`} />
+                  ) : null}
+                </span>
+              )
+            })}
+          </div>
+          {isLast && busy ? <span className="round-live" title="当前轮" /> : null}
+          <span className="round-summary">
+            {isLast && busy ? '进行中…' : `${roundElapsed.toFixed(1)}s`}
+          </span>
         </div>
         <div className="round-body">
           {g.items.map((it) => renderItem(it))}
@@ -349,6 +398,25 @@ export default function App() {
         {view === 'chat' ? (
           <main className="stream" ref={streamRef} onScroll={onScroll}>
             {state.error ? <div className="banner banner-error">✘ {state.error}</div> : null}
+            {state.items.length === 0 && !busy ? (
+              <div className="empty">
+                <div className="empty-logo">R</div>
+                <h2>ReAct Agent</h2>
+                <p>显式五阶段协议：思考 → 计划 → 执行 → 观察 → 验收</p>
+                <div className="examples">
+                  {EXAMPLE_TASKS.map((ex) => (
+                    <button
+                      key={ex.title}
+                      className="example"
+                      onClick={() => sendTask(ex.title)}
+                    >
+                      <b>{ex.title}</b>
+                      <span>{ex.desc}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
             {groups.map((g, i) => renderRoundGroup(g, i))}
             {state.lastResult ? (
               <div className="banner banner-done">
@@ -390,7 +458,7 @@ export default function App() {
               onSkip={doSkip}
             />
           ) : null}
-          <ChatInput disabled={busy || state.awaiting !== null} onSubmit={sendTask} />
+          <ChatInput disabled={busy || state.awaiting !== null} onSubmit={sendTask} gateMode={state.gateMode} />
         </footer>
       </div>
 
