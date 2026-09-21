@@ -47,6 +47,8 @@ class SessionContext:
     max_rounds: int = 10
     # 发给模型的最近原文条数上限；超出部分折算摘要。<=0 表示不压缩（全量发送）
     max_context_messages: int = 12
+    # 运行环境信息（OS/shell/cwd/工具可用性），拼进每步 system 提示
+    env_info: str = ""
 
     # ---- 历史维护 ----
 
@@ -158,8 +160,10 @@ class SessionContext:
             cleaned.append(m)
         windowed = cleaned
 
+        env_block = f"# 运行环境\n{self.env_info}\n\n" if self.env_info else ""
         system = (
             f"{GLOBAL_PROTOCOL}\n\n"
+            f"{env_block}"
             f"# 当前阶段：{action.name.upper()}\n\n"
             f"{action.skill_body}\n\n"
             f"{digest + chr(10) + chr(10) if digest else ''}"

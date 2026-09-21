@@ -529,14 +529,18 @@ def run_sandboxed(
     low_integrity: bool = False,
     active_process_limit: int = 64,
     job_memory_limit: int = 512 * 1024 * 1024,
+    backend: str = "cmd",
+    bash_path: str = "",
 ) -> str:
-    """在受限令牌 + 作业对象下执行 `cmd`（cmd.exe /c），返回 `exit=<code>\n<output>`。
+    """在受限令牌 + 作业对象下执行 `cmd`，返回 `exit=<code>\n<output>`。
 
     参数：
-      cmd                  要执行的命令（与 subprocess shell=True 同语义，由 cmd.exe /c 解释）
+      cmd                  要执行的命令
       cwd                 子进程工作目录
       timeout_sec         超时（秒），超时则终止整个作业
       low_integrity       是否降完整性级别（开启前会先把 cwd 降为 Low IL）
+      backend             shell 后端：cmd=cmd.exe /c，bash=bash.exe 执行脚本
+      bash_path           bash.exe 绝对路径（backend=bash 时必填）
     异常：非 Windows / ctypes 缺失 / Win32 调用失败 → 抛对应异常。
     """
     if not _WIN:
@@ -565,9 +569,18 @@ def run_sandboxed(
     si.hStdError = err_w
     si.hStdInput = None  # 无 stdin，命令不应期望键盘输入
 
-    # 命令：显式指定 cmd.exe 绝对路径，避免受限令牌下 PATH 搜索问题
-    comspec = os.environ.get("COMSPEC") or r"C:\Windows\System32\cmd.exe"
-    cmdline = ctypes.create_unicode_buffer(f"/c {cmd}")
+    # 命令：cmd 后端用 cmd.exe /c；bash 后端把脚本写临时文件再 bash 执行（避开引号转义坑）
+    tmp_script = ""
+    if backend == "bash" and bash_path:
+        import tempfile
+        tmp_script = os.path.join(tempfile.gettempdir(), "react_agent_sandbox.sh")
+        with open(tmp_script, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(cmd)
+        comspec = bash_path
+        cmdline = ctypes.create_unicode_buffer(f'"{bash_path}" "{tmp_script}"')
+    else:
+        comspec = os.environ.get("COMSPEC") or r"C:\Windows\System32\cmd.exe"
+        cmdline = ctypes.create_unicode_buffer(f"/c {cmd}")
     pi = PROCESS_INFORMATION()
 
     base_flags = CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED
@@ -662,6 +675,11 @@ def run_sandboxed(
     kernel32.GetExitCodeProcess(pi.hProcess, ctypes.byref(exit_code))
 
     # 收尾句柄
+    if tmp_script:
+        try:
+            os.unlink(tmp_script)
+        except OSError:
+            pass
     kernel32.CloseHandle(pi.hThread)
     kernel32.CloseHandle(pi.hProcess)
     kernel32.CloseHandle(out_r)

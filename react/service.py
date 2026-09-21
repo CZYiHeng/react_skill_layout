@@ -344,10 +344,40 @@ class ReactService:
         registry.load(self.skills_dir)
         return registry
 
+    def _build_env_info(self) -> str:
+        """构造运行环境信息文本，拼进每步 system 提示，避免模型在真空中默认 Linux。"""
+        import platform
+        import shutil
+        lines = [
+            f"- 操作系统：{platform.system()} {platform.release()}",
+        ]
+        backend = str(self.cfg.get("shell_backend", "cmd"))
+        bash_path = ""
+        if backend == "auto":
+            from .executor import _detect_bash
+            bash_path = _detect_bash()
+            backend = "bash" if bash_path else "cmd"
+        elif backend == "bash":
+            bash_path = self.cfg.get("bash_path", "") or r"C:\Program Files\Git\bin\bash.exe"
+        if backend == "bash":
+            lines.append(f"- shell 后端：bash（Git Bash，{bash_path}）")
+            lines.append("- 写命令时用 bash 语法（mkdir -p、&&、管道等），但调用 Python 用 `python` 不是 `python3`")
+        else:
+            lines.append("- shell 后端：cmd.exe（Windows 命令行）")
+            lines.append("- 写命令时用 cmd 语法：用 `&&` 连接命令，不要用 `set +e`、`nohup`、`find`、heredoc；调用 Python 用 `python` 不是 `python3`")
+        cwd = self.cfg.get("work_dir") or ""
+        if cwd:
+            lines.append(f"- 工作目录：{cwd}")
+        # 探测可用工具
+        tools = [t for t in ("python", "node", "npm", "uv", "git", "pip") if shutil.which(t)]
+        lines.append("- 可用工具：" + (", ".join(tools) if tools else "（未检测到常见 CLI）"))
+        return "\n".join(lines)
+
     def build_context(self, max_rounds: int | None = None) -> SessionContext:
         return SessionContext(
             max_rounds=int(max_rounds or self.cfg.get("max_rounds", 10)),
             max_context_messages=int(self.cfg.get("max_context_messages", 12)),
+            env_info=self._build_env_info(),
         )
 
     def build_executor(self, allow_exec: bool | None = None,
@@ -376,6 +406,7 @@ class ReactService:
             timeout_sec=int(self.cfg.get("exec_timeout_sec", 30)),
             sandbox=bool(self.cfg.get("sandbox_shell", False)),
             low_integrity=bool(self.cfg.get("sandbox_integrity_low", False)),
+            shell_backend=str(self.cfg.get("shell_backend", "cmd")),
         )
 
     def build_model(self, role: str = "act") -> OpenAIClient | None:

@@ -41,6 +41,7 @@ DEFAULTS: dict = {
     "exec_timeout_sec": 30,
     "sandbox_shell": False,
     "sandbox_integrity_low": False,
+    "shell_backend": "cmd",      # cmd / bash / auto；auto=探测 Git Bash，找不到回退 cmd
     "gate_mode": "plan",
     "work_dir": "",
     "allow_outside_work_dir": False,

@@ -318,6 +318,7 @@ CONFIG_FIELDS: dict[str, type] = {
     "max_context_messages": int, "exec_timeout_sec": int,
     "enable_shell_exec": bool, "enable_file_write": bool,
     "sandbox_shell": bool, "sandbox_integrity_low": bool,
+    "shell_backend": str,
     "gate_mode": str, "work_dir": str, "allow_outside_work_dir": bool,
 }
 CONFIG_REQUIRED = ("base_url", "api_key", "model")
