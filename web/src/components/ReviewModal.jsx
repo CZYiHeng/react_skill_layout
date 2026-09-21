@@ -2,13 +2,49 @@
 import { useState } from 'react'
 import * as api from '../api'
 
+// 审查结果持久化：刷新页面后仍能看到上次的报告与输入
+const LS_KEY = 'react-agent:review'
+function loadReview() {
+  try {
+    return JSON.parse(localStorage.getItem(LS_KEY) || '{}')
+  } catch {
+    return {}
+  }
+}
+function saveReview(patch) {
+  try {
+    localStorage.setItem(LS_KEY, JSON.stringify({ ...loadReview(), ...patch }))
+  } catch {
+    // 配额满等异常静默忽略，不影响主流程
+  }
+}
+function clearReview() {
+  try {
+    localStorage.removeItem(LS_KEY)
+  } catch {}
+}
+
 export default function ReviewModal({ onClose, sessionId, inline }) {
-  const [mode, setMode] = useState('current')
-  const [markdown, setMarkdown] = useState('')
-  const [fileName, setFileName] = useState('')
+  const [mode, setModeRaw] = useState(() => loadReview().mode || 'current')
+  const [markdown, setMarkdownRaw] = useState(() => loadReview().markdown || '')
+  const [fileName, setFileName] = useState(() => loadReview().fileName || '')
   const [loading, setLoading] = useState(false)
-  const [report, setReport] = useState('')
+  const [report, setReport] = useState(() => loadReview().report || '')
   const [error, setError] = useState('')
+
+  const setMode = (m) => {
+    setModeRaw(m)
+    saveReview({ mode: m })
+  }
+  const setMarkdown = (v) => {
+    setMarkdownRaw(v)
+    saveReview({ markdown: v })
+  }
+
+  const clearReport = () => {
+    setReport('')
+    clearReview()
+  }
 
   const run = async () => {
     setLoading(true)
@@ -19,6 +55,7 @@ export default function ReviewModal({ onClose, sessionId, inline }) {
         ? await api.reviewCurrent(sessionId)
         : await api.reviewFile(markdown)
       setReport(body.report || '(空报告)')
+      saveReview({ report: body.report || '(空报告)' })
     } catch (e) {
       setError(e.message)
     } finally {
@@ -60,6 +97,7 @@ export default function ReviewModal({ onClose, sessionId, inline }) {
                   const f = e.target.files?.[0]
                   if (!f) return
                   setFileName(f.name)
+                  saveReview({ fileName: f.name })
                   const reader = new FileReader()
                   reader.onload = () => setMarkdown(reader.result || '')
                   reader.readAsText(f)
@@ -87,7 +125,15 @@ export default function ReviewModal({ onClose, sessionId, inline }) {
         )}
 
         {loading ? <div className="notice">分析中，模型调用约需 10-30 秒…</div> : null}
-        {report ? <pre className="report-output">{report}</pre> : null}
+        {report ? (
+          <div className="report-wrap">
+            <div className="report-bar">
+              <span className="report-hint">上次审查结果（已本地保存，刷新不丢失）</span>
+              <button type="button" className="btn btn-sm btn-danger-ghost" onClick={clearReport}>清除记录</button>
+            </div>
+            <pre className="report-output">{report}</pre>
+          </div>
+        ) : null}
         {error ? <div className="notice notice-error">{error}</div> : null}
       </div>
 

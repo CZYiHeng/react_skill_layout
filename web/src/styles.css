@@ -595,3 +595,10 @@ button { font-family: inherit; }
   max-width: 70%;
 }
 .task-rule { flex: 1; height: 1px; background: var(--border); }
+
+.report-wrap { margin-top: 12px; }
+.report-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px;
+}
+.report-hint { font-size: 12px; color: var(--muted); }
