@@ -105,21 +105,41 @@ export default function SettingsModal({ onClose, onSaved, allowOutside: currentA
               <h3>模型</h3>
               <label className="set-field">
                 <span>当前档案</span>
-                <select value={form.active_profile ?? ''} onChange={(e) => {
-                  const name = e.target.value
-                  const prof = (form.profiles || []).find(p => p.name === name)
-                  set('active_profile', name)
-                  if (prof) {
-                    set('base_url', prof.base_url || '')
-                    set('api_key', prof.api_key || '')
-                    set('model', prof.model || '')
-                  }
-                }}>
-                  <option value="">（默认/单模型）</option>
-                  {(form.profiles || []).map(p => (
-                    <option key={p.name} value={p.name}>{p.name}</option>
-                  ))}
-                </select>
+                <div className="key-row">
+                  <select value={form.active_profile ?? ''} onChange={(e) => {
+                    const name = e.target.value
+                    const prof = (form.profiles || []).find(p => p.name === name)
+                    set('active_profile', name)
+                    if (prof) {
+                      set('base_url', prof.base_url || '')
+                      set('api_key', prof.api_key || '')
+                      set('model', prof.model || '')
+                    }
+                  }}>
+                    <option value="">（默认/单模型）</option>
+                    {(form.profiles || []).map(p => (
+                      <option key={p.name} value={p.name}>{p.name}</option>
+                    ))}
+                  </select>
+                  <button type="button" className="btn btn-sm" onClick={() => {
+                    const name = prompt('新档案名称：')
+                    if (!name) return
+                    const profiles = [...(form.profiles || []), { name, base_url: '', api_key: '', model: '', timeout_sec: 120 }]
+                    set('profiles', profiles)
+                    set('active_profile', name)
+                    set('base_url', '')
+                    set('api_key', '')
+                    set('model', '')
+                  }}>+ 新建</button>
+                  {form.active_profile ? (
+                    <button type="button" className="btn btn-sm" onClick={() => {
+                      if (!confirm(`删除档案 "${form.active_profile}"？`)) return
+                      const profiles = (form.profiles || []).filter(p => p.name !== form.active_profile)
+                      set('profiles', profiles)
+                      set('active_profile', '')
+                    }}>删除</button>
+                  ) : null}
+                </div>
                 <small>切换档案只影响新任务；保存时当前地址/Key/模型会写回该档案</small>
               </label>
               {strField('base_url', 'API 地址', 'OpenAI 兼容端点，如 https://api.deepseek.com')}
