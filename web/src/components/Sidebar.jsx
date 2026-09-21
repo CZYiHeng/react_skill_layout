@@ -10,7 +10,7 @@ const GATE_MODES = [
 
 export default function Sidebar({
   config, binds, status, gateMode, onGateMode, workDir, onWorkDir,
-  allowOutside, onAllowOutside, onPause, onAbort, onReset, onSave, onSettings, totalTokens, onSwitchModel,
+  allowOutside, onAllowOutside, onPause, onAbort, onReset, onSave, onSettings, totalTokens, onSwitchModel, onReview,
 }) {
   const running = status === 'running'
   return (
@@ -112,6 +112,7 @@ export default function Sidebar({
           </>
         ) : null}
         <button className="btn" onClick={() => onSave?.()}>导出纪要</button>
+        <button className="btn" onClick={() => onReview?.()}>审查会话</button>
         <button className="btn" onClick={() => onReset?.()}>清空会话</button>
       </div>
     </aside>

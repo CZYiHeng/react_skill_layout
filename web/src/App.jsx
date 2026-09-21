@@ -6,6 +6,7 @@ import ChatInput from './components/ChatInput'
 import GateBar from './components/GateBar'
 import Sidebar from './components/Sidebar'
 import SettingsModal from './components/SettingsModal'
+import ReviewModal from './components/ReviewModal'
 import SolutionCard from './components/SolutionCard'
 import StepPanel from './components/StepPanel'
 import { initialState, reducer } from './store'
@@ -58,6 +59,7 @@ export default function App() {
   const stickRef = useRef(true)          // 是否贴底（决定新内容是否自动跟随）
   const [showBack, setShowBack] = useState(false)  // 是否显示"回到底部"按钮
   const [showSettings, setShowSettings] = useState(false)  // 设置弹窗
+  const [showReview, setShowReview] = useState(false)  // 会话审查
   const [manualCollapsed, setManualCollapsed] = useState(() => new Set())  // 用户手动折叠的轮次 n
 
   // 打开事件流：仅贴底自动跟随由 onScroll 处理；统一在此封装便于复用
@@ -326,6 +328,7 @@ export default function App() {
         onReset={doReset}
         onSave={doSave}
         onSettings={() => setShowSettings(true)}
+        onReview={() => setShowReview(true)}
         totalTokens={state.totalTokens}
         onSwitchModel={async (name) => {
           await api.saveConfig({ active_profile: name })
@@ -379,6 +382,13 @@ export default function App() {
           <ChatInput disabled={busy || state.awaiting !== null} onSubmit={sendTask} />
         </footer>
       </div>
+
+      {showReview ? (
+        <ReviewModal
+          sessionId={state.sessionId}
+          onClose={() => setShowReview(false)}
+        />
+      ) : null}
 
       {showSettings ? (
         <SettingsModal

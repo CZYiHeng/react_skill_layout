@@ -35,6 +35,7 @@ from .action import ACTION_NAMES
 from .config import ConfigError, load_config, resolve_config_path
 from .service import (AgentEvent, EventRenderer, QueueControl, ReactService,
                       resolve_work_dir)
+from .model import OpenAIClient
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DIST_DIR = BASE_DIR / "web" / "dist"
@@ -288,6 +289,102 @@ async def api_save(request: Request) -> JSONResponse:
     return JSONResponse({"markdown": sess.context.export_markdown()})
 
 
+
+async def api_review_current(request: Request) -> JSONResponse:
+    """审查当前会话：对照 skill 检查合规性。"""
+    body = await _json_body(request)
+    sess = MANAGER.get(str(body.get("session_id", "")))
+    if sess is None:
+        return JSONResponse({"error": "会话不存在"}, status_code=404)
+    md = sess.context.export_markdown()
+    cfg = _load_cfg()
+    report = _run_review(cfg, md, BASE_DIR)
+    return JSONResponse({"report": report})
+
+
+async def api_review_file(request: Request) -> JSONResponse:
+    """审查上传的 markdown 文件。"""
+    body = await _json_body(request)
+    md = body.get("markdown", "")
+    if not md.strip():
+        return JSONResponse({"error": "markdown 内容为空"}, status_code=400)
+    cfg = _load_cfg()
+    report = _run_review(cfg, md, BASE_DIR)
+    return JSONResponse({"report": report})
+
+
+def _run_review(cfg: dict, markdown: str, base_dir: Path) -> str:
+    """调模型对照 skill 分析会话。"""
+    # 读取所有 SKILL.md
+    skills_dir = base_dir / "skills"
+    skill_texts = []
+    if skills_dir.is_dir():
+        for skill_dir in sorted(skills_dir.iterdir()):
+            sk = skill_dir / "SKILL.md"
+            if sk.is_file():
+                skill_texts.append(f"### {skill_dir.name.upper()} SKILL.md\n{sk.read_text(encoding='utf-8')}")
+    skills_block = "\n\n".join(skill_texts)
+
+    prof = _active_profile_cfg(cfg)
+    client = OpenAIClient(
+        prof.get("base_url", ""), prof.get("api_key", ""),
+        prof.get("model", ""), 300,
+    )
+
+    prompt = f"""你是 ReAct Agent 框架审查员。对照下面的 Skill 要求，审查这段会话记录是否合规。
+
+## Skill 要求
+{skills_block}
+
+## 会话记录
+{markdown[:50000]}
+
+## 输出要求
+按以下结构输出（中文，Markdown 格式）：
+
+# 会话审查报告
+
+## 一、Skill 要求摘要
+（列出五阶段各自的核心约束，3-5 条）
+
+## 二、会话流程概述
+（从会话提取的步骤时间线，一句话一步）
+
+## 三、逐项对照
+| 检查项 | 要求 | 实际 | 结果 |
+|---|---|---|---|
+（至少 5 项，结果用 ✅/❌）
+
+## 四、偏差项
+1. **偏差描述**
+   证据：...
+   影响：...
+
+## 五、Skill 优化建议
+（哪条 SKILL.md 要怎么改）
+
+## 六、结论
+✅ 通过 / ❌ 不通过（N 项偏差）
+"""
+    resp = client.chat([
+        {"role": "system", "content": "你是严格的框架审查员，如实判定，不讨好。"},
+        {"role": "user", "content": prompt},
+    ])
+    return resp.text
+
+
+def _active_profile_cfg(cfg: dict) -> dict:
+    profiles = cfg.get("profiles") or []
+    active = cfg.get("active_profile")
+    for p in profiles:
+        if p.get("name") == active:
+            return p
+    return {
+        "base_url": cfg.get("base_url", ""),
+        "api_key": cfg.get("api_key", ""),
+        "model": cfg.get("model", ""),
+    }
+
 async def api_reset(request: Request) -> JSONResponse:
     """清空会话上下文（不销毁会话）。如果有任务在跑，先中止再清。"""
     body = await _json_body(request)
@@ -408,6 +505,8 @@ def create_app() -> Starlette:
         Route("/api/reset", api_reset, methods=["POST"]),
         Route("/api/config", api_config_get, methods=["GET"]),
         Route("/api/config", api_config_put, methods=["PUT", "POST"]),
+        Route("/api/review/current", api_review_current, methods=["POST"]),
+        Route("/api/review/file", api_review_file, methods=["POST"]),
     ]
     if DIST_DIR.is_dir():
         routes.append(Mount("/assets", StaticFiles(directory=DIST_DIR / "assets"),

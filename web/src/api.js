@@ -72,6 +72,20 @@ export function saveConfig(config) {
   })
 }
 
+export function reviewCurrent(sessionId) {
+  return request('/review/current', {
+    method: 'POST',
+    body: JSON.stringify({ session_id: sessionId }),
+  })
+}
+
+export function reviewFile(markdown) {
+  return request('/review/file', {
+    method: 'POST',
+    body: JSON.stringify({ markdown }),
+  })
+}
+
 /**
  * 打开 SSE 事件流。每条事件回调 onEvent(data)；流结束回调 onEnd()。
  * 返回关闭函数。

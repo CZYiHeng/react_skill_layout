@@ -336,6 +336,9 @@ body {
 .profile-name { font-weight: 600; font-size: 14px; }
 .profile-badge { font-size: 11px; color: #16a34a; font-weight: 600; }
 .btn-danger { color: #dc2626; }
+.review-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.review-input { width: 100%; font: inherit; border: 1px solid var(--border-strong); border-radius: 8px; padding: 8px; resize: vertical; }
+.report-output { background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 8px; font-size: 12px; white-space: pre-wrap; word-break: break-word; max-height: 400px; overflow-y: auto; margin-top: 12px; }
 .set-field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
 .set-field > span { color: var(--muted); font-size: 12px; }
 .set-field small { font-size: 11px; color: var(--muted); }
