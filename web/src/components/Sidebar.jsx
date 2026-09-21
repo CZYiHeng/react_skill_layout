@@ -10,7 +10,7 @@ const GATE_MODES = [
 
 export default function Sidebar({
   config, binds, status, gateMode, onGateMode, workDir, onWorkDir,
-  allowOutside, onAllowOutside, onPause, onAbort, onReset, onSave, onSettings,
+  allowOutside, onAllowOutside, onPause, onAbort, onReset, onSave, onSettings, totalTokens,
 }) {
   const running = status === 'running'
   return (
@@ -30,6 +30,9 @@ export default function Sidebar({
           {status}
           {config ? ` · ${config.model}` : ''}
         </div>
+        {totalTokens > 0 ? (
+          <div className="token-total">累计 {totalTokens.toLocaleString()} tok</div>
+        ) : null}
       </div>
 
       <div>

@@ -18,6 +18,7 @@ export const initialState = {
   allowOutside: false, // 是否允许 work_dir 指向项目根目录之外（需绝对路径）
   error: null,
   lastResult: null,
+  totalTokens: 0,
 }
 
 function pushItem(state, item) {
@@ -90,7 +91,7 @@ export function reducer(state, action) {
     case 'task_start':
       // 保留历史 items，新任务内容追加在旧记录之后，便于回看排查
       return { ...state, live: null, awaiting: null, status: 'running', error: null,
-               lastResult: null }
+               lastResult: null, totalTokens: 0 }
 
     case 'reset':
       return { ...initialState, sessionId: state.sessionId, config: state.config,
@@ -111,7 +112,10 @@ export function reducer(state, action) {
 
         case 'step': {
           const streamed = state.live && state.live.action === e.action ? state.live.text : null
-          return pushItem({ ...state, live: null }, {
+          const usage = e.usage || null
+          const addTokens = usage?.total || e.tokens || 0
+          return pushItem({ ...state, live: null,
+                            totalTokens: state.totalTokens + addTokens }, {
             kind: 'step',
             action: e.action,
             text: e.text,
@@ -119,6 +123,7 @@ export function reducer(state, action) {
             streamed,
             elapsed: e.elapsed_sec,
             tokens: e.tokens,
+            usage,
             reasoning: e.reasoning,
           })
         }

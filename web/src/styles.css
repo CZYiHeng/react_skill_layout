@@ -112,6 +112,7 @@ body {
   background: currentColor; animation: pulse 1.2s ease-in-out infinite;
 }
 .status-running { color: #16a34a; background: #dcfce7; }
+.token-total { margin-top: 6px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .status-done { color: #166534; background: #dcfce7; }
 .status-error { color: #991b1b; background: #fee2e2; }
 .status-aborted { color: #92400e; background: #fef3c7; }

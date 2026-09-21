@@ -290,6 +290,7 @@ export default function App() {
           text={it.text}
           elapsed={it.elapsed}
           tokens={it.tokens}
+          usage={it.usage}
           reasoning={it.reasoning}
         />
       )
@@ -325,6 +326,7 @@ export default function App() {
         onReset={doReset}
         onSave={doSave}
         onSettings={() => setShowSettings(true)}
+        totalTokens={state.totalTokens}
       />
 
       <div className="main">

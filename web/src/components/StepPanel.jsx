@@ -9,9 +9,12 @@ const META = {
   verify: { icon: '✔', label: 'VERIFY', color: '#06b6d4' },
 }
 
-export default function StepPanel({ action, text, elapsed, tokens, reasoning, streaming }) {
+export default function StepPanel({ action, text, elapsed, tokens, usage, reasoning, streaming }) {
   const meta = META[action] || { icon: '·', label: (action || '').toUpperCase(), color: '#64748b' }
   const body = text || ''
+  const tokStr = usage
+    ? `${usage.total}tok (入${usage.prompt}/出${usage.completion})`
+    : (typeof tokens === 'number' ? `${tokens}tok` : '')
   return (
     <div className="panel" style={{ borderLeftColor: meta.color }}>
       <div className="panel-head">
@@ -20,7 +23,7 @@ export default function StepPanel({ action, text, elapsed, tokens, reasoning, st
         </span>
         <span className="panel-meta">
           {typeof elapsed === 'number' && `${elapsed.toFixed(1)}s`}
-          {typeof tokens === 'number' && ` · ${tokens}tok`}
+          {tokStr && ` · ${tokStr}`}
           {streaming && <span className="live-dot"> 流式</span>}
         </span>
       </div>

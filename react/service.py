@@ -76,9 +76,11 @@ class EventRenderer:
         self._emit("round", round_no=round_no)
 
     def show(self, action: str, parsed: str, raw: str,
-             elapsed_sec: float, tokens: int, reasoning: str = "") -> None:
+             elapsed_sec: float, tokens: int, reasoning: str = "",
+             usage: dict | None = None) -> None:
         self._emit("step", action, parsed,
-                   raw=raw, elapsed_sec=elapsed_sec, tokens=tokens, reasoning=reasoning)
+                   raw=raw, elapsed_sec=elapsed_sec, tokens=tokens, reasoning=reasoning,
+                   usage=usage)
 
     def ask_question(self, question: str) -> None:
         self._emit("ask", text=question)
@@ -118,9 +120,10 @@ class NullRenderer:
             self._inner.round_banner(round_no)
 
     def show(self, action: str, parsed: str, raw: str,
-             elapsed_sec: float, tokens: int, reasoning: str = "") -> None:
+             elapsed_sec: float, tokens: int, reasoning: str = "",
+             usage: dict | None = None) -> None:
         if self._inner:
-            self._inner.show(action, parsed, raw, elapsed_sec, tokens, reasoning)
+            self._inner.show(action, parsed, raw, elapsed_sec, tokens, reasoning, usage)
 
     def ask_question(self, question: str) -> None:
         if self._inner:

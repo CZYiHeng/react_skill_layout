@@ -35,6 +35,7 @@ class ModelResponse:
     tool_name: str = ""        # 模型调用的工具名（无调用时为空串）
     tool_args: dict | None = None  # 工具参数（已解析 JSON；无调用时为 None）
     tool_calls: list | None = None  # 完整工具调用数组（OpenAI 规范，含 id/name/arguments）
+    usage: dict | None = None  # 完整 token 用量 {prompt, completion, total}
 
 
 def _safe_json(raw: str) -> dict:
@@ -119,9 +120,16 @@ class OpenAIClient:
 
         stream = self._client.chat.completions.create(**kwargs)
         tokens = 0
+        usage = None
         for chunk in stream:
             if getattr(chunk, "usage", None):
-                tokens = chunk.usage.completion_tokens or 0
+                u = chunk.usage
+                tokens = u.completion_tokens or 0
+                usage = {
+                    "prompt": u.prompt_tokens or 0,
+                    "completion": u.completion_tokens or 0,
+                    "total": u.total_tokens or 0,
+                }
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
@@ -174,7 +182,7 @@ class OpenAIClient:
                              elapsed_sec=time.monotonic() - start,
                              reasoning="".join(reasoning_parts),
                              tool_name=tool_name, tool_args=tool_args,
-                             tool_calls=tool_calls)
+                             tool_calls=tool_calls, usage=usage)
 
 
 class MockClient:

@@ -257,6 +257,7 @@ class StepOutput:
     reasoning: str = ""    # 思考过程（仅部分模型提供，如 kimi 的 reasoning_content）
     tool_name: str = ""    # 本步调用的工具名（无则空串）
     tool_args: dict | None = None  # 工具参数（已解析；无则 None）
+    usage: dict | None = None  # {prompt, completion, total}
 
 
 @dataclass
@@ -593,7 +594,8 @@ class ReActLoop:
         out = StepOutput(action=action_name, raw=resp.text, parsed=parsed,
                          elapsed_sec=resp.elapsed_sec, tokens=resp.tokens,
                          reasoning=resp.reasoning,
-                         tool_name=resp.tool_name, tool_args=resp.tool_args)
+                         tool_name=resp.tool_name, tool_args=resp.tool_args,
+                         usage=resp.usage)
 
         # 历史账本：原生工具调用须按 OpenAI 规范回写 assistant(tool_calls)
         # + 随后的 role=tool 回执，保证后续调用历史合法（缺口 ⑧）
@@ -607,7 +609,7 @@ class ReActLoop:
         else:
             self.context.add_assistant(resp.text)
         self.render.show(action_name, parsed, resp.text or parsed, resp.elapsed_sec,
-                         resp.tokens, reasoning=resp.reasoning)
+                         resp.tokens, reasoning=resp.reasoning, usage=resp.usage)
 
         if run_gate:
             self._apply_gate(action_name)
