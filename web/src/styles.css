@@ -367,3 +367,9 @@ body {
   .sidebar .round-summary { display: none; }
   .sidebar .slot-row { gap: 4px; }
 }
+
+.view-tabs { display: flex; gap: 4px; }
+.tab { padding: 6px 14px; border: none; background: none; font-size: 13px; color: var(--muted); cursor: pointer; border-radius: 6px; }
+.tab.on { background: #e2e8f0; color: #0f172a; font-weight: 600; }
+.tab:hover { background: #f1f5f9; }
+.view-pane { flex: 1; overflow-y: auto; padding: 20px; max-width: 700px; margin: 0 auto; }

@@ -58,8 +58,7 @@ export default function App() {
   const streamRef = useRef(null)
   const stickRef = useRef(true)          // 是否贴底（决定新内容是否自动跟随）
   const [showBack, setShowBack] = useState(false)  // 是否显示"回到底部"按钮
-  const [showSettings, setShowSettings] = useState(false)  // 设置弹窗
-  const [showReview, setShowReview] = useState(false)  // 会话审查
+  const [view, setView] = useState('chat')  // chat | settings | review
   const [manualCollapsed, setManualCollapsed] = useState(() => new Set())  // 用户手动折叠的轮次 n
 
   // 打开事件流：仅贴底自动跟随由 onScroll 处理；统一在此封装便于复用
@@ -327,8 +326,8 @@ export default function App() {
         onAbort={doAbort}
         onReset={doReset}
         onSave={doSave}
-        onSettings={() => setShowSettings(true)}
-        onReview={() => setShowReview(true)}
+        onSettings={() => setView('settings')}
+        onReview={() => setView('review')}
         totalTokens={state.totalTokens}
         onSwitchModel={async (name) => {
           await api.saveConfig({ active_profile: name })
@@ -339,21 +338,33 @@ export default function App() {
 
       <div className="main">
         <div className="topbar">
-          <div className="crumb">ReAct Agent 对话</div>
+          <div className="view-tabs">
+            <button className={view === 'chat' ? 'tab on' : 'tab'} onClick={() => setView('chat')}>对话</button>
+            <button className={view === 'settings' ? 'tab on' : 'tab'} onClick={() => setView('settings')}>设置</button>
+            <button className={view === 'review' ? 'tab on' : 'tab'} onClick={() => setView('review')}>审查</button>
+          </div>
           <div className={`status-pill status-${state.status}`}>{state.status}</div>
         </div>
 
-        <main className="stream" ref={streamRef} onScroll={onScroll}>
-          {state.error ? <div className="banner banner-error">✘ {state.error}</div> : null}
+        {view === 'chat' ? (
+          <main className="stream" ref={streamRef} onScroll={onScroll}>
+            {state.error ? <div className="banner banner-error">✘ {state.error}</div> : null}
+            {groups.map((g, i) => renderRoundGroup(g, i))}
+            {state.lastResult ? (
+              <div className="banner banner-done">
+                ✔ 完成：{state.lastResult.status} · {state.lastResult.rounds} 轮
+              </div>
+            ) : null}
+          </main>
+        ) : null}
 
-          {groups.map((g, i) => renderRoundGroup(g, i))}
+        {view === 'settings' ? (
+          <SettingsModal inline allowOutside={state.allowOutside} onSaved={() => {}} onClose={() => {}} />
+        ) : null}
 
-          {state.lastResult ? (
-            <div className="banner banner-done">
-              ✔ 完成：{state.lastResult.status} · {state.lastResult.rounds} 轮
-            </div>
-          ) : null}
-        </main>
+        {view === 'review' ? (
+          <ReviewModal inline sessionId={state.sessionId} onClose={() => {}} />
+        ) : null}
 
         {showBack ? (
           <div className="back-to-bottom" title="回到底部" onClick={jumpToBottom}>
@@ -383,17 +394,10 @@ export default function App() {
         </footer>
       </div>
 
-      {showReview ? (
-        <ReviewModal
-          sessionId={state.sessionId}
-          onClose={() => setShowReview(false)}
-        />
-      ) : null}
-
-      {showSettings ? (
+      {false ? (
         <SettingsModal
           allowOutside={state.allowOutside}
-          onClose={() => setShowSettings(false)}
+          onClose={() => {}}
           onSaved={() => {
             // 配置已写回文件：只更新 config 相关字段，不动 items/live/awaiting
             api.getConfig().then((d) => {

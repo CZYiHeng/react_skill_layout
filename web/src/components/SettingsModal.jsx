@@ -6,7 +6,7 @@ import * as api from '../api'
 
 const GATE_MODES = ['plan', 'step', 'auto', 'phase']
 
-export default function SettingsModal({ onClose, onSaved, allowOutside: currentAllowOutside }) {
+export default function SettingsModal({ onClose, onSaved, allowOutside: currentAllowOutside, inline }) {
   const [form, setForm] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -107,12 +107,11 @@ export default function SettingsModal({ onClose, onSaved, allowOutside: currentA
 
   const profiles = form?.profiles || []
 
-  return (
-    <div className="modal-mask" ref={maskRef}>
-      <div className="modal">
+  const inner = (
+    <>
         <div className="modal-head">
           <h2>设置</h2>
-          <button className="modal-close" onClick={onClose}>✕</button>
+          {!inline ? <button className="modal-close" onClick={onClose}>✕</button> : null}
         </div>
 
         {loading ? (
@@ -231,13 +230,18 @@ export default function SettingsModal({ onClose, onSaved, allowOutside: currentA
         <div className="modal-foot">
           <span className="set-tip">保存后，<b>下一个任务</b>生效（当前运行任务不受影响）</span>
           <div className="modal-foot-actions">
-            <button className="btn" onClick={onClose}>取消</button>
+            {!inline ? <button className="btn" onClick={onClose}>取消</button> : null}
             <button className="btn btn-primary" disabled={!form || saving} onClick={save}>
               {saving ? '保存中…' : '保存'}
             </button>
           </div>
         </div>
-      </div>
-    </div>
+    </>
+  )
+
+  return inline ? (
+    <div className="view-pane">{inner}</div>
+  ) : (
+    <div className="modal-mask" ref={maskRef}><div className="modal">{inner}</div></div>
   )
 }
