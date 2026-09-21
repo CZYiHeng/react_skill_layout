@@ -421,8 +421,7 @@ export default function App() {
           <div className={`status-pill status-${state.status}`}>{state.status}</div>
         </div>
 
-        {view === 'chat' ? (
-          <main className="stream" ref={streamRef} onScroll={onScroll}>
+        <main className={`stream${view === 'chat' ? '' : ' pane-hidden'}`} ref={streamRef} onScroll={onScroll}>
             {state.error ? <div className="banner banner-error">✘ {state.error}</div> : null}
             {state.items.length === 0 && !busy ? (
               <div className="empty">
@@ -449,16 +448,15 @@ export default function App() {
                 ✔ 完成：{state.lastResult.status} · {state.lastResult.rounds} 轮
               </div>
             ) : null}
-          </main>
-        ) : null}
+        </main>
 
-        {view === 'settings' ? (
+        <div className={view === 'settings' ? 'host-pane' : 'host-pane pane-hidden'}>
           <SettingsModal inline allowOutside={state.allowOutside} onSaved={() => {}} onClose={() => {}} />
-        ) : null}
+        </div>
 
-        {view === 'review' ? (
+        <div className={view === 'review' ? 'host-pane' : 'host-pane pane-hidden'}>
           <ReviewModal inline sessionId={state.sessionId} onClose={() => {}} />
-        ) : null}
+        </div>
 
         {showBack ? (
           <div className="back-to-bottom" title="回到底部" onClick={jumpToBottom}>
@@ -466,8 +464,7 @@ export default function App() {
           </div>
         ) : null}
 
-        {view === 'chat' ? (
-        <footer className="controls">
+        <footer className={`controls${view === 'chat' ? '' : ' pane-hidden'}`}>
           {state.awaiting === 'gate' ? (
             <GateBar
               action={state.items.filter((i) => i.kind === 'step').slice(-1)[0]?.action}
@@ -487,7 +484,6 @@ export default function App() {
           ) : null}
           <ChatInput disabled={busy || state.awaiting !== null} onSubmit={sendTask} gateMode={state.gateMode} />
         </footer>
-        ) : null}
       </div>
 
       {false ? (

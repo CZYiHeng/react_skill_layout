@@ -631,3 +631,12 @@ button { font-family: inherit; }
   margin-bottom: 8px;
 }
 .report-hint { font-size: 12px; color: var(--muted); }
+
+/* ===== 视图常驻：三 pane 同时挂载，切换只切 display，避免重挂载闪烁 ===== */
+.pane-hidden { display: none !important; }
+.host-pane {
+  flex: 1; min-height: 0; min-width: 0;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.host-pane > .view-pane { flex: 1; width: 100%; max-width: none; margin: 0; }
