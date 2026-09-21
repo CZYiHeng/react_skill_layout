@@ -327,6 +327,11 @@ export default function App() {
         onSave={doSave}
         onSettings={() => setShowSettings(true)}
         totalTokens={state.totalTokens}
+        onSwitchModel={async (name) => {
+          await api.saveConfig({ active_profile: name })
+          const d = await api.getConfig()
+          dispatch({ type: 'config_update', config: d.config || {} })
+        }}
       />
 
       <div className="main">

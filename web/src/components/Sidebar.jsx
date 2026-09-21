@@ -10,7 +10,7 @@ const GATE_MODES = [
 
 export default function Sidebar({
   config, binds, status, gateMode, onGateMode, workDir, onWorkDir,
-  allowOutside, onAllowOutside, onPause, onAbort, onReset, onSave, onSettings, totalTokens,
+  allowOutside, onAllowOutside, onPause, onAbort, onReset, onSave, onSettings, totalTokens, onSwitchModel,
 }) {
   const running = status === 'running'
   return (
@@ -32,6 +32,17 @@ export default function Sidebar({
         </div>
         {totalTokens > 0 ? (
           <div className="token-total">累计 {totalTokens.toLocaleString()} tok</div>
+        ) : null}
+        {config?.profiles?.length > 0 ? (
+          <div className="field" style={{ marginTop: 8 }}>
+            <label>模型</label>
+            <select value={config.active_profile || ''} onChange={(e) => onSwitchModel?.(e.target.value)}>
+              <option value="">默认（{config.model}）</option>
+              {config.profiles.map((p) => (
+                <option key={p.name} value={p.name}>{p.name}</option>
+              ))}
+            </select>
+          </div>
         ) : null}
       </div>
 
