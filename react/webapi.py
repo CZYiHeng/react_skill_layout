@@ -366,7 +366,7 @@ def _run_review(cfg: dict, markdown: str, base_dir: Path) -> str:
 ## 六、结论
 ✅ 通过 / ❌ 不通过（N 项偏差）
 """
-    resp = client.chat([
+    resp = client.complete([
         {"role": "system", "content": "你是严格的框架审查员，如实判定，不讨好。"},
         {"role": "user", "content": prompt},
     ])
