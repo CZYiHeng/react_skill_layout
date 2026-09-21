@@ -24,10 +24,6 @@ export default function SettingsModal({ onClose, onSaved }) {
       .finally(() => setLoading(false))
   }, [])
 
-  // 只在点击遮罩本身（而非弹窗内容）时关闭，避免点输入框/下拉框误关
-  const onMaskClick = (e) => {
-    if (e.target === maskRef.current) onClose()
-  }
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }))
 
@@ -74,7 +70,7 @@ export default function SettingsModal({ onClose, onSaved }) {
   )
 
   return (
-    <div className="modal-mask" ref={maskRef} onClick={onMaskClick}>
+    <div className="modal-mask" ref={maskRef}>
       <div className="modal">
         <div className="modal-head">
           <h2>设置</h2>
