@@ -400,7 +400,9 @@ async def spa_fallback(request: Request):
     """SPA 回退：未匹配的路径交给前端路由；未构建时给出明确指引。"""
     index = DIST_DIR / "index.html"
     if index.is_file():
-        return FileResponse(index)
+        resp = FileResponse(index)
+        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return resp
     return HTMLResponse(
         "<h3>前端尚未构建</h3><p>请先执行：</p><pre>cd web\nnpm install\nnpm run build</pre>"
         "<p>开发模式可改用：<code>npm run dev</code>（5173 端口，已配置代理到 8000）。</p>",
