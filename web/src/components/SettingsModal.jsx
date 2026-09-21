@@ -36,7 +36,20 @@ export default function SettingsModal({ onClose, onSaved, allowOutside: currentA
     setSaving(true)
     setError('')
     try {
-      await api.saveConfig(form)
+      // 把当前模型字段写回选中的 profile
+      const profiles = [...(form.profiles || [])]
+      const profData = {
+        base_url: form.base_url || '',
+        api_key: form.api_key || '',
+        model: form.model || '',
+        timeout_sec: form.step_timeout_sec || 120,
+      }
+      if (form.active_profile) {
+        const idx = profiles.findIndex(p => p.name === form.active_profile)
+        if (idx >= 0) profiles[idx] = { ...profiles[idx], ...profData }
+        else profiles.push({ name: form.active_profile, ...profData })
+      }
+      await api.saveConfig({ ...form, profiles })
       onSaved?.()
       onClose()
     } catch (e) {
@@ -90,6 +103,25 @@ export default function SettingsModal({ onClose, onSaved, allowOutside: currentA
           <div className="modal-body">
             <div className="set-group">
               <h3>模型</h3>
+              <label className="set-field">
+                <span>当前档案</span>
+                <select value={form.active_profile ?? ''} onChange={(e) => {
+                  const name = e.target.value
+                  const prof = (form.profiles || []).find(p => p.name === name)
+                  set('active_profile', name)
+                  if (prof) {
+                    set('base_url', prof.base_url || '')
+                    set('api_key', prof.api_key || '')
+                    set('model', prof.model || '')
+                  }
+                }}>
+                  <option value="">（默认/单模型）</option>
+                  {(form.profiles || []).map(p => (
+                    <option key={p.name} value={p.name}>{p.name}</option>
+                  ))}
+                </select>
+                <small>切换档案只影响新任务；保存时当前地址/Key/模型会写回该档案</small>
+              </label>
               {strField('base_url', 'API 地址', 'OpenAI 兼容端点，如 https://api.deepseek.com')}
               <label className="set-field">
                 <span>API Key</span>
