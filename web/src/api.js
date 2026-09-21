@@ -61,6 +61,17 @@ export function postReset(sessionId) {
   })
 }
 
+export function getConfig() {
+  return request('/config', { method: 'GET' })
+}
+
+export function saveConfig(config) {
+  return request('/config', {
+    method: 'PUT',
+    body: JSON.stringify(config),
+  })
+}
+
 /**
  * 打开 SSE 事件流。每条事件回调 onEvent(data)；流结束回调 onEnd()。
  * 返回关闭函数。

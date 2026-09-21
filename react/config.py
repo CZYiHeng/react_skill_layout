@@ -21,6 +21,7 @@ ENV_MAP = {
     "api_key": "REACT_AGENT_API_KEY",
     "base_url": "REACT_AGENT_BASE_URL",
     "model": "REACT_AGENT_MODEL",
+    "plan_model": "REACT_AGENT_PLAN_MODEL",
     "gate_mode": "REACT_AGENT_GATE_MODE",
     "work_dir": "REACT_AGENT_WORK_DIR",
     "allow_outside_work_dir": "REACT_AGENT_ALLOW_OUTSIDE_WORK_DIR",
@@ -43,6 +44,8 @@ DEFAULTS: dict = {
     "gate_mode": "plan",
     "work_dir": "",
     "allow_outside_work_dir": False,
+    "plan_model": "",            # 计划阶段专用模型（推理模型如 deepseek-reasoner）；空=与 model 相同
+    "plan_timeout_sec": 300,     # 计划模型超时（推理模型更慢，默认更长）
 }
 
 #: 人工闸门档位。plan=计划批准一次后放行（默认，推荐）

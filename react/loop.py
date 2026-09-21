@@ -68,7 +68,10 @@ def parse_check(raw: str) -> str:
     return m.group(1).strip() if m else ""
 
 
-_EXEC_FENCE_RE = re.compile(r"```[a-zA-Z]*[ \t]*\n(.*?)```", re.DOTALL)
+_EXEC_FENCE_RE = re.compile(
+    r"```[a-zA-Z]*[ \t]*\n(.*?)\n```"
+    r"(?=\s*(?:\[EXEC:|\[RESULT\]|\[CHECK\]|\[FORMAT\]|$))",
+    re.DOTALL)
 
 # 执行标记必须「另起一行」才算数。否则正文里引用一句
 # 「方案：用 [EXEC: write] 落盘」也会被当成真的执行请求，解析出垃圾载荷。
@@ -269,6 +272,7 @@ class ReActLoop:
     context: SessionContext
     model: ModelClient
     render: Renderer
+    plan_model: ModelClient | None = None  # 计划阶段专用模型（推理模型）；None=回落到 model
     gate: Gate | None = None          # None = 自动继续（--smoke 场景）
     ask: Ask | None = None            # None = ASK 用占位回答（自动场景）
     executor: Executor | None = None  # ACT 执行器；None = 不执行（纯文本产物）
@@ -579,7 +583,9 @@ class ReActLoop:
         messages = self.context.build_step_messages(action, step_prompt)
         # 流式：向渲染层索取本步的 token 回调并透传（此前从未透传，model 的 on_token 是死代码）
         on_token = self.render.on_token(action_name)
-        resp = self.model.complete(messages, tools=tools, on_token=on_token)
+        # 计划阶段用推理模型（慢但深），其余阶段用执行模型（快而稳）；plan_model 未配置则回落
+        client = self.plan_model if (action_name == "plan" and self.plan_model) else self.model
+        resp = client.complete(messages, tools=tools, on_token=on_token)
         parsed = parse_tag(resp.text, action_name.upper())
         # 控制阶段常无正文（决策/判定在工具参数里）：用工具渲染兜底，保展示与历史可见
         if not parsed.strip() and resp.tool_name:

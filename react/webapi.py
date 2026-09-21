@@ -289,13 +289,87 @@ async def api_save(request: Request) -> JSONResponse:
 
 
 async def api_reset(request: Request) -> JSONResponse:
-    """清空会话上下文（不销毁会话）。"""
+    """清空会话上下文（不销毁会话）。如果有任务在跑，先中止再清。"""
     body = await _json_body(request)
     sess = MANAGER.get(str(body.get("session_id", "")))
     if sess is None:
         return JSONResponse({"error": "会话不存在"}, status_code=404)
+    # 有任务在跑：发 abort 唤醒阻塞中的线程，等其结束
+    if sess.thread is not None and sess.thread.is_alive():
+        sess.control.submit("abort")
+        try:
+            sess.done.wait(timeout=5.0)
+        except Exception:
+            pass
     sess.context.reset()
+    sess.status = "idle"
+    sess.last_result = None
     return JSONResponse({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# 配置文件读写（页面上改 config.json，下个任务 _load_cfg 重读即生效）
+# ---------------------------------------------------------------------------
+#: 允许页面修改的字段白名单 + 类型。不在表中的字段不会被写入（防止污染）。
+CONFIG_FIELDS: dict[str, type] = {
+    "model": str, "base_url": str, "api_key": str,
+    "plan_model": str, "plan_timeout_sec": int,
+    "max_rounds": int, "step_timeout_sec": int, "show_reasoning": bool,
+    "max_context_messages": int, "exec_timeout_sec": int,
+    "enable_shell_exec": bool, "enable_file_write": bool,
+    "sandbox_shell": bool, "sandbox_integrity_low": bool,
+    "gate_mode": str, "work_dir": str, "allow_outside_work_dir": bool,
+}
+CONFIG_REQUIRED = ("base_url", "api_key", "model")
+
+
+async def api_config_get(request: Request) -> JSONResponse:
+    """读当前配置文件（原样返回，不合并环境变量）。"""
+    path = resolve_config_path(BASE_DIR)
+    if not path.is_file():
+        return JSONResponse({"error": f"配置文件不存在: {path.name}"}, status_code=404)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        return JSONResponse({"error": f"配置文件损坏: {e}"}, status_code=500)
+    return JSONResponse({"path": str(path), "config": data})
+
+
+async def api_config_put(request: Request) -> JSONResponse:
+    """合并写回配置文件：仅白名单字段按类型强转，保留未知字段。"""
+    body = await _json_body(request)
+    path = resolve_config_path(BASE_DIR)
+    try:
+        current = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+        if not isinstance(current, dict):
+            current = {}
+    except json.JSONDecodeError:
+        current = {}
+
+    for key, typ in CONFIG_FIELDS.items():
+        if key not in body:
+            continue
+        val = body[key]
+        if typ is bool:
+            current[key] = bool(val)
+        elif typ is int:
+            try:
+                current[key] = int(val)
+            except (TypeError, ValueError):
+                return JSONResponse({"error": f"字段 {key} 应为整数"}, status_code=400)
+        else:
+            current[key] = str(val)
+
+    for key in CONFIG_REQUIRED:
+        if not str(current.get(key, "")).strip():
+            return JSONResponse({"error": f"{key} 不能为空"}, status_code=400)
+
+    try:
+        path.write_text(json.dumps(current, ensure_ascii=False, indent=2) + "\n",
+                        encoding="utf-8")
+    except OSError as e:
+        return JSONResponse({"error": f"写入失败: {e}"}, status_code=500)
+    return JSONResponse({"ok": True, "path": str(path)})
 
 
 async def spa_fallback(request: Request):
@@ -320,6 +394,8 @@ def create_app() -> Starlette:
         Route("/api/state", api_state, methods=["GET"]),
         Route("/api/save", api_save, methods=["GET"]),
         Route("/api/reset", api_reset, methods=["POST"]),
+        Route("/api/config", api_config_get, methods=["GET"]),
+        Route("/api/config", api_config_put, methods=["PUT", "POST"]),
     ]
     if DIST_DIR.is_dir():
         routes.append(Mount("/assets", StaticFiles(directory=DIST_DIR / "assets"),

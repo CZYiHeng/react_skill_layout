@@ -73,7 +73,7 @@ class EventRenderer:
         return lambda t: self._emit("token", action, t)
 
     def round_banner(self, round_no: int) -> None:
-        self._emit("round", payload={"round_no": round_no})
+        self._emit("round", round_no=round_no)
 
     def show(self, action: str, parsed: str, raw: str,
              elapsed_sec: float, tokens: int, reasoning: str = "") -> None:
@@ -378,10 +378,23 @@ class ReactService:
             low_integrity=bool(self.cfg.get("sandbox_integrity_low", False)),
         )
 
-    def build_model(self):
+    def build_model(self, role: str = "act") -> OpenAIClient | None:
+        """构造模型客户端。
+
+        role="act"：执行/思考/观察/验证等阶段（默认 model，超时 step_timeout_sec）。
+        role="plan"：计划阶段专用（plan_model，未配置则回退返回 None，由循环层回落到 act 模型；
+                     超时 plan_timeout_sec，默认更长以容纳推理模型）。
+        """
+        if role == "plan":
+            name = self.cfg.get("plan_model") or self.cfg["model"]
+            if not self.cfg.get("plan_model"):
+                return None  # 未配置计划模型 → 回落到 act 模型
+            timeout = int(self.cfg.get("plan_timeout_sec", 300))
+        else:
+            name = self.cfg["model"]
+            timeout = int(self.cfg.get("step_timeout_sec", 120))
         return OpenAIClient(
-            self.cfg["base_url"], self.cfg["api_key"], self.cfg["model"],
-            self.cfg.get("step_timeout_sec", 120),
+            self.cfg["base_url"], self.cfg["api_key"], name, timeout,
         )
 
     def build_runtime(
@@ -405,11 +418,21 @@ class ReactService:
         registry = self.build_registry()
         context = context or self.build_context(max_rounds)
         executor = self.build_executor(allow_exec, work_dir, allow_outside_work_dir)
+        if model is not None:
+            act_model = model          # 外部指定了单一模型 → 计划阶段回落到它
+            plan_model = None
+        else:
+            act_model = self.build_model("act")
+            plan_model = self.build_model("plan")
+        mode = gate_mode or self.cfg.get("gate_mode", "plan")
+        ask_fn = control.as_ask()
+        if mode == "auto":
+            ask_fn = lambda q: "（自动回答：继续）"
         loop = ReActLoop(
-            registry, context, model or self.build_model(), render,
-            gate=control.as_gate(), ask=control.as_ask(), executor=executor,
-            gate_mode=gate_mode or self.cfg.get("gate_mode", "plan"),
-            interrupt=control.as_interrupt(),
+            registry, context, act_model, render,
+            gate=control.as_gate(), ask=ask_fn, executor=executor,
+            gate_mode=mode,
+            interrupt=control.as_interrupt(), plan_model=plan_model,
         )
         return Runtime(loop=loop, context=context, registry=registry,
                        executor=executor, control=control)

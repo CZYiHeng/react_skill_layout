@@ -55,6 +55,23 @@ react> 帮我设计一个 Excel 转 Markdown 的脚本方案
 
 **想主动介入不用等闸门**：运行时点「暂停」，循环在下一个阶段边界停下（可继续 / 纠偏 / 中止）；也可以直接下发纠偏，不打断执行、从下一步生效。
 
+## 双模型（计划 / 执行分离）
+
+默认所有阶段共用同一个 `model`。若你希望**计划阶段用推理模型、其余阶段用快模型**（更合理也更省 token），可单独配置 `plan_model`：
+
+```json
+{
+  "model": "deepseek-chat",          // 执行 / 思考 / 观察 / 验证：快而稳的 chat
+  "plan_model": "deepseek-reasoner", // 仅 PLAN 阶段：慢但深的推理模型
+  "plan_timeout_sec": 300            // 计划模型超时（推理模型更慢，默认 300，可改）
+}
+```
+
+- `plan_model` 留空（`""`）或不配置 → 计划阶段自动回落到 `model`，行为与旧版一致。
+- 配置后，循环仅在 `action_name == "plan"` 时调用 `plan_model` 客户端，其余（`think` / `act` / `observe` / `verify`）一律用 `model`。
+- 推理模型的 `reasoning_content` 仅用于流式展示（`show_reasoning`），**不会进入上下文账本**，因此不会污染消息窗口、不会撑大上下文。
+- 也可用环境变量 `REACT_AGENT_PLAN_MODEL` 覆盖文件配置。
+
 ## 工作原理
 
 ```

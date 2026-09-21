@@ -42,6 +42,28 @@ export function reducer(state, action) {
       }
     }
 
+    case 'restore': {
+      // 刷新后从本地快照重建界面（历史条目 / 状态 / 配置），不触发新的实时流
+      const s = action.snapshot || {}
+      return {
+        ...state,
+        sessionId: action.sessionId || state.sessionId,
+        items: Array.isArray(s.items) ? s.items : state.items,
+        status: s.status || 'idle',
+        lastResult: s.lastResult || null,
+        awaiting: s.awaiting || null,
+        gateReason: s.gateReason || '',
+        gateCount: s.gateCount || 0,
+        config: s.config || state.config,
+        binds: s.binds || state.binds,
+        gateMode: s.gateMode || state.gateMode,
+        workDir: s.workDir || '',
+        allowOutside: !!s.allowOutside,
+        error: null,
+        live: null,
+      }
+    }
+
     case 'gate_mode':
       return { ...state, gateMode: action.gateMode }
 
@@ -52,9 +74,9 @@ export function reducer(state, action) {
       return { ...state, allowOutside: action.allowOutside }
 
     case 'task_start':
-      return { ...initialState, sessionId: state.sessionId, config: state.config,
-               binds: state.binds, status: 'running', gateMode: state.gateMode,
-               workDir: state.workDir, allowOutside: state.allowOutside }
+      // 保留历史 items，新任务内容追加在旧记录之后，便于回看排查
+      return { ...state, live: null, awaiting: null, status: 'running', error: null,
+               lastResult: null }
 
     case 'reset':
       return { ...initialState, sessionId: state.sessionId, config: state.config,
@@ -71,7 +93,7 @@ export function reducer(state, action) {
       const e = action.event
       switch (e.type) {
         case 'round':
-          return pushItem(state, { kind: 'round', n: e.round_no })
+          return pushItem(state, { kind: 'round', n: e.round_no ?? e.payload?.round_no })
 
         case 'step': {
           const streamed = state.live && state.live.action === e.action ? state.live.text : null
