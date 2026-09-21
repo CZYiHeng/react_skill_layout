@@ -132,7 +132,7 @@ export default function SettingsModal({ onClose, onSaved }) {
 
             <div className="set-group">
               <h3>工作目录</h3>
-              {strField('work_dir', '工作目录', '相对路径按项目内解析；留空=项目根')}
+              {strField('work_dir', '工作目录', 'agent 干活的目录。填子目录名（如 src），留空=项目根目录；要指项目外目录请先勾选下方开关')}
               {boolField('allow_outside_work_dir', '允许项目外绝对路径')}
             </div>
 
