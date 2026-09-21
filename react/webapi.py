@@ -333,10 +333,9 @@ def _run_review(cfg: dict, markdown: str, base_dir: Path) -> str:
                 skill_texts.append(f"### {skill_dir.name.upper()} SKILL.md\n{sk.read_text(encoding='utf-8')}")
     skills_block = "\n\n".join(skill_texts)
 
-    prof = _active_profile_cfg(cfg)
     client = OpenAIClient(
-        prof.get("base_url", ""), prof.get("api_key", ""),
-        prof.get("model", ""), 300,
+        cfg.get("base_url", ""), cfg.get("api_key", ""),
+        cfg.get("model", ""), 300,
     )
 
     prompt = f"""你是 ReAct Agent 框架审查员。对照下面的 Skill 要求，审查这段会话记录是否合规。
