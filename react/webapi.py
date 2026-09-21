@@ -298,7 +298,11 @@ async def api_review_current(request: Request) -> JSONResponse:
         return JSONResponse({"error": "会话不存在"}, status_code=404)
     md = sess.context.export_markdown()
     cfg = _load_cfg()
-    report = _run_review(cfg, md, BASE_DIR)
+    try:
+        report = _run_review(cfg, md, BASE_DIR)
+    except Exception as e:
+        import traceback
+        return JSONResponse({"error": f"{type(e).__name__}: {e}\n{traceback.format_exc()}"}, status_code=500)
     return JSONResponse({"report": report})
 
 
@@ -309,7 +313,11 @@ async def api_review_file(request: Request) -> JSONResponse:
     if not md.strip():
         return JSONResponse({"error": "markdown 内容为空"}, status_code=400)
     cfg = _load_cfg()
-    report = _run_review(cfg, md, BASE_DIR)
+    try:
+        report = _run_review(cfg, md, BASE_DIR)
+    except Exception as e:
+        import traceback
+        return JSONResponse({"error": f"{type(e).__name__}: {e}\n{traceback.format_exc()}"}, status_code=500)
     return JSONResponse({"report": report})
 
 
