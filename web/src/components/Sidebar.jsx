@@ -33,12 +33,12 @@ export default function Sidebar({
         {totalTokens > 0 ? (
           <div className="token-total">累计 {totalTokens.toLocaleString()} tok</div>
         ) : null}
-        {config?.profiles?.length > 0 ? (
+        {config ? (
           <div className="field" style={{ marginTop: 8 }}>
             <label>模型</label>
             <select value={config.active_profile || ''} onChange={(e) => onSwitchModel?.(e.target.value)}>
               <option value="">默认（{config.model}）</option>
-              {config.profiles.map((p) => (
+              {(config.profiles || []).map((p) => (
                 <option key={p.name} value={p.name}>{p.name}</option>
               ))}
             </select>
