@@ -377,10 +377,10 @@ export default function App() {
         <SettingsModal
           onClose={() => setShowSettings(false)}
           onSaved={() => {
-            // 配置已写回文件：下个任务生效。刷新本会话 config 显示。
+            // 配置已写回文件：全量刷新 config，左侧目录/闸门/执行器开关同步更新。
             api.getConfig().then((d) => {
               dispatch({ type: 'session', sessionId: state.sessionId,
-                         config: { ...state.config, model: d.config?.model },
+                         config: d.config || state.config,
                          binds: state.binds })
             }).catch(() => {})
           }}
