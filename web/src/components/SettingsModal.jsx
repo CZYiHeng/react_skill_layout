@@ -13,6 +13,10 @@ export default function SettingsModal({ onClose, onSaved, allowOutside: currentA
   const [saving, setSaving] = useState(false)
   const [showKey, setShowKey] = useState(false)
   const maskRef = useRef(null)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [pickerCwd, setPickerCwd] = useState('')
+  const [pickerEntries, setPickerEntries] = useState([])
+  const [pickerLoading, setPickerLoading] = useState(false)
 
   useEffect(() => {
     api.getConfig()
@@ -31,6 +35,25 @@ export default function SettingsModal({ onClose, onSaved, allowOutside: currentA
 
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }))
+
+  const openPicker = async (path) => {
+    setPickerOpen(true)
+    setPickerLoading(true)
+    try {
+      const d = await api.listDirs(path)
+      setPickerCwd(d.cwd)
+      setPickerEntries(d.entries || [])
+    } catch (e) {
+      setPickerEntries([])
+    } finally {
+      setPickerLoading(false)
+    }
+  }
+
+  const pickDir = (path) => {
+    set('work_dir', path)
+    setPickerOpen(false)
+  }
 
   const save = async () => {
     setSaving(true)
@@ -137,10 +160,41 @@ export default function SettingsModal({ onClose, onSaved, allowOutside: currentA
 
             <div className="set-group">
               <h3>工作目录</h3>
-              {strField('work_dir', '工作目录', 'agent 干活的目录。填子目录名（如 src），留空=项目根目录；要指项目外目录请先勾选下方开关')}
+              <label className="set-field">
+                <span>工作目录</span>
+                <div className="key-row">
+                  <input type="text" value={form.work_dir ?? ''} onChange={(e) => set('work_dir', e.target.value)} placeholder="留空=项目根目录" />
+                  <button type="button" className="btn btn-sm" onClick={() => openPicker(form.work_dir || '')}>浏览</button>
+                </div>
+                <small>agent 干活的目录。填子目录名（如 src），留空=项目根目录；要指项目外目录请先勾选下方开关</small>
+              </label>
               {boolField('allow_outside_work_dir', '允许项目外绝对路径')}
             </div>
 
+            {pickerOpen ? (
+              <div className="dir-picker">
+                <div className="dir-picker-head">
+                  <span>选择目录</span>
+                  <button type="button" className="modal-close" onClick={() => setPickerOpen(false)}>✕</button>
+                </div>
+                <div className="dir-picker-cwd">{pickerCwd}</div>
+                {pickerLoading ? (
+                  <div className="dir-picker-body">加载中…</div>
+                ) : (
+                  <div className="dir-picker-body">
+                    <div className="dir-item" onClick={() => openPicker('..')}>..</div>
+                    {pickerEntries.map((e) => (
+                      <div key={e.path} className="dir-item" onClick={() => openPicker(e.path)}>
+                        {e.name}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="dir-picker-foot">
+                  <button className="btn btn-sm" onClick={() => pickDir(pickerCwd)}>选这个目录</button>
+                </div>
+              </div>
+            ) : null}
             {error ? <div className="notice notice-error">{error}</div> : null}
           </div>
         ) : null}

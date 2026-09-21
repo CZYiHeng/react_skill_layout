@@ -373,6 +373,29 @@ async def api_config_put(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "path": str(path)})
 
 
+async def api_list_dirs(request: Request) -> JSONResponse:
+    """列出指定路径下的子目录（供前端工作目录选择器用）。"""
+    from pathlib import Path
+    target = request.query_params.get("path", "")
+    base = BASE_DIR
+    try:
+        p = Path(target) if target else base
+        if not p.is_absolute():
+            p = base / p
+        p = p.resolve()
+        if not p.is_dir():
+            return JSONResponse({"error": f"不是目录: {p}"}, status_code=400)
+        entries = []
+        for child in sorted(p.iterdir()):
+            if child.is_dir() and not child.name.startswith("."):
+                entries.append({"name": child.name, "path": str(child)})
+        return JSONResponse({"cwd": str(p), "entries": entries})
+    except PermissionError:
+        return JSONResponse({"error": "无权限访问该目录"}, status_code=403)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 async def spa_fallback(request: Request):
     """SPA 回退：未匹配的路径交给前端路由；未构建时给出明确指引。"""
     index = DIST_DIR / "index.html"
@@ -397,6 +420,7 @@ def create_app() -> Starlette:
         Route("/api/reset", api_reset, methods=["POST"]),
         Route("/api/config", api_config_get, methods=["GET"]),
         Route("/api/config", api_config_put, methods=["PUT", "POST"]),
+        Route("/api/dirs", api_list_dirs, methods=["GET"]),
     ]
     if DIST_DIR.is_dir():
         routes.append(Mount("/assets", StaticFiles(directory=DIST_DIR / "assets"),

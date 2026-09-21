@@ -72,6 +72,11 @@ export function saveConfig(config) {
   })
 }
 
+export function listDirs(path) {
+  const q = path ? `?path=${encodeURIComponent(path)}` : ''
+  return request(`/dirs${q}`, { method: 'GET' })
+}
+
 /**
  * 打开 SSE 事件流。每条事件回调 onEvent(data)；流结束回调 onEnd()。
  * 返回关闭函数。
