@@ -38,13 +38,26 @@ export default function ReviewModal({ onClose, sessionId, inline }) {
         </div>
 
         {mode === 'file' ? (
-          <textarea
-            className="review-input"
-            placeholder="粘贴会话 markdown..."
-            value={markdown}
-            onChange={(e) => setMarkdown(e.target.value)}
-            rows={8}
-          />
+          <>
+            <input
+              type="file"
+              accept=".md,.markdown,.txt"
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                if (!f) return
+                const reader = new FileReader()
+                reader.onload = () => setMarkdown(reader.result || '')
+                reader.readAsText(f)
+              }}
+            />
+            <textarea
+              className="review-input"
+              placeholder="粘贴会话 markdown 或选择 .md 文件"
+              value={markdown}
+              onChange={(e) => setMarkdown(e.target.value)}
+              rows={16}
+            />
+          </>
         ) : (
           <p style={{ fontSize: 13, color: 'var(--muted)' }}>
             审查当前会话记录，对照 skills/ 下的 SKILL.md 检查合规性。
