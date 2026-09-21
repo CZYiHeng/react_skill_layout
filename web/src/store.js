@@ -64,6 +64,20 @@ export function reducer(state, action) {
       }
     }
 
+    case 'config_update': {
+      // 设置弹窗保存后调用：只更新 config/目录/闸门，不动 items/live/awaiting
+      const cfg = action.config || {}
+      return {
+        ...state,
+        config: cfg,
+        gateMode: cfg.gate_mode || state.gateMode,
+        workDir: cfg.work_dir ?? state.workDir,
+        allowOutside: 'allow_outside_work_dir' in cfg
+          ? !!cfg.allow_outside_work_dir
+          : state.allowOutside,
+      }
+    }
+
     case 'gate_mode':
       return { ...state, gateMode: action.gateMode }
 

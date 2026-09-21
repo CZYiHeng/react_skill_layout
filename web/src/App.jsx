@@ -377,11 +377,9 @@ export default function App() {
         <SettingsModal
           onClose={() => setShowSettings(false)}
           onSaved={() => {
-            // 配置已写回文件：全量刷新 config，左侧目录/闸门/执行器开关同步更新。
+            // 配置已写回文件：只更新 config 相关字段，不动 items/live/awaiting
             api.getConfig().then((d) => {
-              dispatch({ type: 'session', sessionId: state.sessionId,
-                         config: d.config || state.config,
-                         binds: state.binds })
+              dispatch({ type: 'config_update', config: d.config || {} })
             }).catch(() => {})
           }}
         />
