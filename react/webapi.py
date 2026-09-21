@@ -320,6 +320,7 @@ CONFIG_FIELDS: dict[str, type] = {
     "sandbox_shell": bool, "sandbox_integrity_low": bool,
     "shell_backend": str,
     "gate_mode": str, "work_dir": str, "allow_outside_work_dir": bool,
+    "active_profile": str,
 }
 CONFIG_REQUIRED = ("base_url", "api_key", "model")
 
@@ -360,6 +361,14 @@ async def api_config_put(request: Request) -> JSONResponse:
                 return JSONResponse({"error": f"字段 {key} 应为整数"}, status_code=400)
         else:
             current[key] = str(val)
+
+    # profiles 是数组，不在类型白名单里，单独保存
+    if "profiles" in body:
+        val = body["profiles"]
+        if isinstance(val, list):
+            current["profiles"] = val
+        else:
+            return JSONResponse({"error": "字段 profiles 应为数组"}, status_code=400)
 
     for key in CONFIG_REQUIRED:
         if not str(current.get(key, "")).strip():
