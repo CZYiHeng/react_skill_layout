@@ -83,6 +83,8 @@ export default function App() {
   const [showBack, setShowBack] = useState(false)  // 是否显示"回到底部"按钮
   const [view, setView] = useState('chat')  // chat | settings | review
   const [manualCollapsed, setManualCollapsed] = useState(() => new Set())  // 手动覆盖默认展开态的轮次键（task-n）
+  const steerFocusedRef = useRef(false)      // 纠偏输入框聚焦时暂停 auto 倒计时
+  const [gateCountdown, setGateCountdown] = useState(null)  // auto 闸门倒计时剩余秒数（null=不显示）
 
   // 打开事件流：仅贴底自动跟随由 onScroll 处理；统一在此封装便于复用
   const connectStream = useCallback((sessionId) => {
@@ -211,6 +213,28 @@ export default function App() {
     },
     [state.sessionId, state.gateMode, state.workDir, state.allowOutside],
   )
+
+  // auto 闸门：gate 弹出后 30s 无操作自动 continue；纠偏输入框聚焦时暂停倒计时
+  useEffect(() => {
+    if (state.awaiting !== 'gate' || state.gateMode !== 'auto') {
+      setGateCountdown(null)
+      return
+    }
+    setGateCountdown(30)
+    const tick = setInterval(() => {
+      if (steerFocusedRef.current) return  // 纠偏输入中，暂停
+      setGateCountdown((c) => {
+        if (c <= 1) {
+          clearInterval(tick)
+          api.postControl(state.sessionId, 'continue').catch(() => {})
+          dispatch({ type: 'consumed' })
+          return 0
+        }
+        return c - 1
+      })
+    }, 1000)
+    return () => clearInterval(tick)
+  }, [state.awaiting, state.gateMode, state.sessionId])
 
   const doContinue = () => {
     api.postControl(state.sessionId, 'continue').catch((e) =>
@@ -473,6 +497,9 @@ export default function App() {
               onContinue={doContinue}
               onSteer={doSteer}
               onAbort={doAbort}
+              autoCountdown={gateCountdown}
+              onSteerFocus={() => { steerFocusedRef.current = true }}
+              onSteerBlur={() => { steerFocusedRef.current = false }}
             />
           ) : null}
           {state.awaiting === 'ask' ? (

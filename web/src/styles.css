@@ -640,3 +640,18 @@ button { font-family: inherit; }
   overflow: hidden;
 }
 .host-pane > .view-pane { flex: 1; width: 100%; max-width: none; margin: 0; }
+
+/* ===== auto 闸门倒计时 ===== */
+.gatebar-countdown {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 12px; color: var(--muted);
+}
+.gatebar-countdown-bar {
+  flex: 1; height: 4px; background: var(--border-strong);
+  border-radius: 2px; overflow: hidden;
+}
+.gatebar-countdown-fill {
+  height: 100%; background: var(--primary);
+  border-radius: 2px; transition: width 1s linear;
+}
+.gatebar-countdown-text { white-space: nowrap; min-width: 90px; }
