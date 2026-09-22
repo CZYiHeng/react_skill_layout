@@ -14,3 +14,8 @@ web/node_modules/
 web/dist/
 # 会话导出纪要（/save 产物，48KB 级，勿入库）
 /session_*.md
+
+# 调试/构建残留
+_build_out.txt
+_locate.py
+_probe*
