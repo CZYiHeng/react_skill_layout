@@ -475,7 +475,11 @@ export default function App() {
         </main>
 
         <div className={view === 'settings' ? 'host-pane' : 'host-pane pane-hidden'}>
-          <SettingsModal inline allowOutside={state.allowOutside} onSaved={() => {}} onClose={() => {}} />
+          <SettingsModal inline allowOutside={state.allowOutside} onSaved={() => {
+            api.getConfig().then((d) => {
+              dispatch({ type: 'config_update', config: d.config || {} })
+            }).catch(() => {})
+          }} onClose={() => {}} />
         </div>
 
         <div className={view === 'review' ? 'host-pane' : 'host-pane pane-hidden'}>
