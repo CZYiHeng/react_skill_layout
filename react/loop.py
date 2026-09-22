@@ -131,13 +131,75 @@ def parse_exec(raw: str) -> tuple[str, str] | None:
 
 
 # 判定文本兜底的同义词分组（工具调用已结构化，无需此表；仅文本回退时用）
-# 顺序敏感：失败词必须先于通过词，否则"未通过"会误判为正向
-_VERDICT_FAIL_WORDS = ("不通过", "未通过", "没通过", "不合格", "未达标", "不达标",
-                      "不符合", "未满足", "不满足", "有误", "有问题", "失败", "未达成")
-_VERDICT_DEFECT_WORDS = ("缺陷", "有缺陷", "需修正", "有错误", "不完整")
-_VERDICT_RETRY_WORDS = ("重试", "重跑", "重做", "重新执行", "再跑")
-_VERDICT_PASS_WORDS = ("通过", "合格", "达标", "满足", "符合", "验收合格",
-                      "通过验收", "可接受")
+# 顺序敏感：失败词必须先于通过词，否则"未通过"/"not pass"会误判为正向
+# 匹配前 body 统一转小写；英文不用 "found" 形式（避免 "no issues found" 被误判），
+# 不用 "error"/"issue" 等短词单用（避免 "no error" 被误判），统一用 has/with/contains 短语
+_VERDICT_FAIL_WORDS = (
+    # 中文
+    "不通过", "未通过", "没通过", "不合格", "未达标", "不达标",
+    "不符合", "未满足", "不满足", "有误", "有问题", "失败", "未达成",
+    # 英文 — 否定/失败
+    "fail", "failed", "failure", "fails", "failing",
+    "reject", "rejected", "rejection", "rejects", "rejecting",
+    "not pass", "not passed", "does not pass", "did not pass",
+    "cannot pass", "can't pass", "won't pass", "would not pass",
+    "invalid", "incorrect", "unmet", "unverified",
+    "not met", "not satisfied", "unsatisfactory", "unacceptable",
+    "does not meet", "did not meet", "fail to meet", "fails to meet",
+    "failed to meet", "failing to meet",
+    "does not conform", "did not conform", "non-conform", "nonconform",
+    # 英文 — 存在问题（has/with/contains 短语，避免 "no error" 否定式误判；
+    # detected 形式只放缺陷词组，"检测到问题"更偏向需修正而非直接不通过）
+    "has error", "have error", "with error",
+    "contains error",
+    "has defect", "have defect", "with defect",
+    "contains defect",
+    "has issue", "have issue", "with issue",
+    "has problem", "have problem", "with problem",
+    "must fix", "need fix", "needs fix", "must correct",
+)
+_VERDICT_DEFECT_WORDS = (
+    # 中文
+    "缺陷", "有缺陷", "需修正", "有错误", "不完整",
+    # 英文 — defective / 存在问题短语 / 需修正（与失败词不重叠，失败词优先匹配）
+    "defective",
+    "has defect", "have defect", "with defect", "defect detected",
+    "contains defect", "defects detected",
+    "has issue", "have issue", "with issue", "issue detected",
+    "issues detected",
+    "has problem", "have problem", "with problem", "problem detected",
+    "problems detected",
+    "incorrect", "wrong", "incomplete",
+    "need fix", "needs fix", "need correction", "correction needed", "needs correction",
+    "should fix", "should correct",
+)
+_VERDICT_RETRY_WORDS = (
+    # 中文
+    "重试", "重跑", "重做", "重新执行", "再跑",
+    # 英文
+    "retry", "retries", "retried", "retrying",
+    "redo", "redid", "redoing", "re-do", "re-doing",
+    "rerun", "re-run", "rerunning", "re-running",
+    "try again", "run again", "execute again", "do again",
+    "re-execute", "re-executing", "reexecuting",
+)
+_VERDICT_PASS_WORDS = (
+    # 中文
+    "通过", "合格", "达标", "满足", "符合", "验收合格", "通过验收", "可接受",
+    # 英文
+    "pass", "passed", "passing",
+    "accept", "accepted", "acceptable", "accepting",
+    "success", "successful", "successfully",
+    "satisfy", "satisfied", "satisfies", "satisfying",
+    "conform", "conforms", "conformed", "conforming",
+    "verified", "validation passed", "check passed", "test passed", "review passed",
+    "criteria met", "requirement met", "requirements met",
+    "all criteria met", "all requirements met",
+    "no issue", "no issues", "no problem", "no problems",
+    "no error", "no errors", "no defect", "no defects",
+    "good to go", "ready to proceed", "ready for release",
+    "all good", "looks good",
+)
 
 
 def parse_verdict(raw: str) -> tuple[str, bool]:
@@ -151,6 +213,7 @@ def parse_verdict(raw: str) -> tuple[str, bool]:
     误判为正向的缺陷：失败词优先于通过词匹配。
     """
     body = parse_tag(raw, "OBSERVATION") if "OBSERVATION" in raw.upper() else parse_tag(raw, "VERIFY")
+    body = body.lower()  # 统一小写，英文同义词匹配不区分大小写
     if any(w in body for w in _VERDICT_FAIL_WORDS):
         return "不通过", True
     if any(w in body for w in _VERDICT_DEFECT_WORDS):
