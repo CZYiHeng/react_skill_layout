@@ -75,7 +75,8 @@ class RichRenderer:
         self.console.rule(f"[bold]Round {round_no}[/bold]", style="dim")
 
     def show(self, action: str, parsed: str, raw: str,
-             elapsed_sec: float, tokens: int, reasoning: str = "") -> None:
+             elapsed_sec: float, tokens: int, reasoning: str = "",
+             usage: dict | None = None) -> None:
         color = _COLORS.get(action, "white")
         title = f"{_ICONS.get(action, action.upper())} · {elapsed_sec:.1f}s · {tokens}tok"
         if action == "act":
