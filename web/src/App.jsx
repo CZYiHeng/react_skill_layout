@@ -420,7 +420,12 @@ export default function App() {
         workDir={state.workDir}
         onWorkDir={(dir) => dispatch({ type: 'work_dir', workDir: dir })}
         allowOutside={state.allowOutside}
-        onAllowOutside={(v) => dispatch({ type: 'allow_outside', allowOutside: v })}
+        onAllowOutside={(v) => {
+          dispatch({ type: 'allow_outside', allowOutside: v })
+          if (state.config) {
+            api.saveConfig({ ...state.config, allow_outside_work_dir: v }).catch(() => {})
+          }
+        }}
         onPause={doPause}
         onAbort={doAbort}
         onReset={doReset}

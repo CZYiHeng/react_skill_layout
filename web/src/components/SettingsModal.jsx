@@ -43,6 +43,11 @@ export default function SettingsModal({ onClose, onSaved, allowOutside: currentA
       .finally(() => setLoading(false))
   }, [])
 
+  // 左侧开关变化时同步到 form（组件常驻，首次加载后 store 变化不会重新拉配置）
+  useEffect(() => {
+    setForm((f) => (f ? { ...f, allow_outside_work_dir: currentAllowOutside } : f))
+  }, [currentAllowOutside])
+
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }))
 
   // 更新某个档案的字段
