@@ -5,6 +5,7 @@ const GATE_HINT = {
   plan: '计划闸门：计划产出后确认一次',
   step: '步进闸门：每个步骤完成后暂停',
   auto: '自动闸门：仅缺陷与最终验收时暂停',
+  phase: '阶段闸门：每个阶段结束后确认一次',
 }
 
 export default function ChatInput({ disabled, onSubmit, gateMode }) {
