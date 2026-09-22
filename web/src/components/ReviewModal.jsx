@@ -1,6 +1,10 @@
 // 会话审查：对照 skill 检查当前会话或上传 markdown。
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import * as api from '../api'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
+
+marked.setOptions({ gfm: true, breaks: true })
 
 // 审查结果持久化：刷新页面后仍能看到上次的报告与输入
 const LS_KEY = 'react-agent:review'
@@ -44,6 +48,30 @@ export default function ReviewModal({ onClose, sessionId, inline }) {
   const clearReport = () => {
     setReport('')
     clearReview()
+  }
+
+  // Markdown → 消毒后的 HTML（结构化渲染）
+  const reportHtml = useMemo(() => {
+    if (!report) return ''
+    try {
+      return DOMPurify.sanitize(marked.parse(report))
+    } catch {
+      return ''
+    }
+  }, [report])
+
+  const copyReport = () => {
+    navigator.clipboard.writeText(report).catch(() => {})
+  }
+
+  const exportReport = () => {
+    const blob = new Blob([report], { type: 'text/markdown;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'review-report.md'
+    a.click()
+    URL.revokeObjectURL(url)
   }
 
   const run = async () => {
@@ -140,9 +168,13 @@ export default function ReviewModal({ onClose, sessionId, inline }) {
           <>
             <div className="report-bar">
               <span className="report-hint">上次审查结果（已本地保存，刷新不丢失）</span>
-              <button type="button" className="btn btn-sm btn-danger-ghost" onClick={clearReport}>清除记录</button>
+              <div className="report-actions">
+                <button type="button" className="btn btn-sm" onClick={copyReport}>复制 Markdown</button>
+                <button type="button" className="btn btn-sm" onClick={exportReport}>导出 .md</button>
+                <button type="button" className="btn btn-sm btn-danger-ghost" onClick={clearReport}>清除记录</button>
+              </div>
             </div>
-            <pre className="report-output">{report}</pre>
+            <div className="report-md" dangerouslySetInnerHTML={{ __html: reportHtml }} />
           </>
         ) : (
           <div className="review-empty">
