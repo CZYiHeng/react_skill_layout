@@ -291,6 +291,8 @@ class ReActLoop:
     _aborted: bool = field(default=False, init=False)
     # ASK 累计计数（独立上限护栏，缺口 g）
     _ask_count: int = field(default=0, init=False)
+    # 最近一次 ACT 阶段的 [RESULT] 产物（VERIFY 通过时作为 final_text，避免取到工具回执）
+    last_act_result: str = field(default="", init=False)
 
     # ------------------------------------------------------------------
 
@@ -302,6 +304,7 @@ class ReActLoop:
         self._ask_count = 0
         self.force_plan = False
         self.feedback = ""
+        self.last_act_result = ""
 
         while self.context.round_no < self.context.max_rounds:
             self.context.round_no += 1
@@ -356,8 +359,14 @@ class ReActLoop:
                 if self._aborted:
                     return LoopResult("aborted", self.context.round_no, "人工中止")
                 if verdict == "通过":
-                    return LoopResult("done", self.context.round_no,
-                                      self.context.messages[-1]["content"] if self.context.messages else "")
+                    final_text = self.last_act_result
+                    if not final_text:
+                        # 未经过 ACT 的简单任务：回退到最后一条 assistant 文本消息（跳过 role=tool 回执）
+                        for _m in reversed(self.context.messages):
+                            if _m.get("role") == "assistant" and _m.get("content"):
+                                final_text = _m["content"]
+                                break
+                    return LoopResult("done", self.context.round_no, final_text)
                 # 验收不通过：注入反馈回炉修正，max_rounds 兜底（缺口 h 修复）
                 self.context.add_user(
                     "最终验收未通过。验收依据：" + vout.parsed +
@@ -403,6 +412,7 @@ class ReActLoop:
         if self._aborted:
             return
         result_text = act_out.parsed
+        self.last_act_result = result_text
         check = parse_check(act_out.raw)
 
         # 方案确认：本步骤若有选择空间，模型应自证「为什么这么做」并留痕，
