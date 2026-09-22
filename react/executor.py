@@ -97,16 +97,24 @@ class LocalExecutor:
     def _write(self, payload: str) -> str:
         if not self.allow_file_write:
             return "（已拒绝：文件写入未启用，请在 config 打开 enable_file_write）"
-        try:
-            data = json.loads(payload)
-        except json.JSONDecodeError:
-            return '（写入失败：载荷不是合法 JSON，需形如 {"path": "...", "content": "..."}）'
-        if not isinstance(data, dict) or not data.get("path"):
-            return "（写入失败：缺少 path 字段）"
-        content = str(data.get("content", ""))
+        # 优先新格式：path: 行 + ---BEGIN---/---END--- 围栏（内容无需 JSON 转义）
+        parsed = _parse_write_payload(payload)
+        if parsed:
+            path, content = parsed
+        else:
+            # 回退旧格式：JSON {"path": "...", "content": "..."}
+            try:
+                data = json.loads(payload)
+            except json.JSONDecodeError:
+                return ('（写入失败：载荷格式无法识别。新格式：path: 相对路径 + '
+                        '---BEGIN---/---END--- 围栏；旧格式：{"path": "...", "content": "..."}）')
+            if not isinstance(data, dict) or not data.get("path"):
+                return "（写入失败：缺少 path 字段）"
+            path = str(data["path"])
+            content = str(data.get("content", ""))
 
         root = self.cwd.resolve()
-        target = (root / str(data["path"])).resolve()
+        target = (root / path).resolve()
         try:
             target.relative_to(root)  # 必须落在工作目录内
         except ValueError:
@@ -117,6 +125,32 @@ class LocalExecutor:
         except OSError as e:
             return f"（写入异常：{e}）"
         return f"已写入 {target}（{len(content)} 字符）"
+
+
+def _parse_write_payload(payload: str):
+    """解析新格式 write 载荷：path: 行 + ---BEGIN---/---END--- 围栏。
+
+    新格式避免了 JSON 转义（大文件内容里的引号/换行/反斜杠无需转义）。
+    返回 (path, content)；非新格式返回 None（调用方回退旧 JSON 解析）。
+    """
+    plines = payload.split('\n')
+    path = None
+    begin_idx = None
+    end_idx = None
+    for i, line in enumerate(plines):
+        s = line.strip()
+        if s.lower().startswith('path:') and path is None:
+            path = s[5:].strip()
+        elif s == '---BEGIN---':
+            begin_idx = i
+        elif s == '---END---':
+            end_idx = i
+            break
+    if path and begin_idx is not None and end_idx is not None and end_idx > begin_idx:
+        content = '\n'.join(plines[begin_idx + 1:end_idx])
+        return path, content
+    return None
+
 
 
 def _detect_bash() -> str:
