@@ -142,7 +142,7 @@ button { font-family: inherit; }
 .btn-sm { padding: 5px 10px; font-size: 12px; border-radius: 7px; }
 
 /* ===== 主区 ===== */
-.main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
 .topbar {
   height: 54px; flex-shrink: 0;
