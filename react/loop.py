@@ -74,7 +74,7 @@ _EXEC_FENCE_RE = re.compile(
 
 # 执行标记必须「另起一行」才算数。否则正文里引用一句
 # 「方案：用 [EXEC: write] 落盘」也会被当成真的执行请求，解析出垃圾载荷。
-_EXEC_RE = re.compile(r"^[ \t]*\[EXEC:\s*(shell|write)\s*\]",
+_EXEC_RE = re.compile(r"^[ \t]*\[EXEC:\s*(shell|read|write|edit|grep|glob)\s*\]",
                       re.IGNORECASE | re.MULTILINE)
 _SOLUTION_RE = re.compile(r"^[ \t]*\[\s*方案\s*\]",
                           re.IGNORECASE | re.MULTILINE)

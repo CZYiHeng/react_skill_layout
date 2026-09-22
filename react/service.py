@@ -406,6 +406,7 @@ class ReactService:
             cwd=self.work_dir,
             allow_shell=shell,
             allow_file_write=write,
+            allow_outside=bool(allow_outside),
             timeout_sec=int(self.cfg.get("exec_timeout_sec", 30)),
             sandbox=bool(self.cfg.get("sandbox_shell", False)),
             low_integrity=bool(self.cfg.get("sandbox_integrity_low", False)),

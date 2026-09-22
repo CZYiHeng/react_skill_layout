@@ -1,15 +1,17 @@
-"""ACT 真实执行器：把 ACT 产出的 [EXEC] 请求落到真实环境（shell / 写文件）。
+"""ACT 真实执行器：把 ACT 产出的 [EXEC] 请求落到真实环境（shell / 文件操作）。
 
 设计原则（安全默认）：
 - **默认关闭**：enable_shell_exec / enable_file_write 均为 False 时一律拒绝，不越权。
-- **工作目录受限**：文件写入必须落在 cwd 之内，越界拒绝。
+- **工作目录受限**：文件读写/搜索必须落在 cwd 之内，越界拒绝（allow_outside 时放行绝对路径）。
 - **超时兜底**：shell 执行有超时，避免挂死。
 - 执行回显交回 OBSERVE 作为观察对象，ACT 仍是"产出意图"，执行由框架代劳。
 """
 
 from __future__ import annotations
 
+import fnmatch
 import json
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -29,7 +31,7 @@ class Executor(Protocol):
 
 @dataclass
 class LocalExecutor:
-    """本机执行器。shell=跑命令，write=写文件；两项分别受开关保护，默认全关。
+    """本机执行器。shell=跑命令；read/write/edit/grep/glob=独立文件操作工具，不依赖 shell。
 
     shell 可选套 OS 级沙箱（仅 Windows）：受限令牌（剥特权）+ 作业对象
     （kill-on-close / 禁 breakaway / 进程数上限 / 内存上限）+ 可选低完整性级别。
@@ -39,6 +41,7 @@ class LocalExecutor:
     cwd: Path
     allow_shell: bool = False
     allow_file_write: bool = False
+    allow_outside: bool = False
     timeout_sec: int = 30
     sandbox: bool = False           # shell 是否走 OS 级沙箱（仅 Windows 生效）
     low_integrity: bool = False     # 沙箱内是否降为低完整性级别（需把 cwd 降 IL，默认关）
@@ -53,8 +56,16 @@ class LocalExecutor:
     def run(self, kind: str, payload: str) -> str:
         if kind == "shell":
             return self._shell(payload)
+        if kind == "read":
+            return self._read(payload)
         if kind == "write":
             return self._write(payload)
+        if kind == "edit":
+            return self._edit(payload)
+        if kind == "grep":
+            return self._grep(payload)
+        if kind == "glob":
+            return self._glob(payload)
         return f"（未知执行类型：{kind}）"
 
     # ------------------------------------------------------------------
@@ -115,16 +126,198 @@ class LocalExecutor:
 
         root = self.cwd.resolve()
         target = (root / path).resolve()
-        try:
-            target.relative_to(root)  # 必须落在工作目录内
-        except ValueError:
-            return f"（已拒绝：目标路径越出工作目录 {root}）"
+        if not self.allow_outside:
+            try:
+                target.relative_to(root)
+            except ValueError:
+                return f"（已拒绝：目标路径越出工作目录 {root}）"
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
         except OSError as e:
             return f"（写入异常：{e}）"
         return f"已写入 {target}（{len(content)} 字符）"
+
+    # ------------------------------------------------------------------
+    # 独立文件操作工具（不依赖 shell，参考 Claude Code / OpenCode）
+
+    def _resolve_path(self, path: str):
+        """解析路径并做越界检查。越界返回 None。"""
+        root = self.cwd.resolve()
+        target = (root / path).resolve()
+        if not self.allow_outside:
+            try:
+                target.relative_to(root)
+            except ValueError:
+                return None
+        return target
+
+    def _read(self, payload: str) -> str:
+        """读文件，带行号输出（cat -n 风格），支持 offset/limit 分段。"""
+        kv = _parse_kv_payload(payload)
+        path = kv.get("path", "").strip()
+        if not path:
+            return "（读取失败：缺少 path 字段）"
+        target = self._resolve_path(path)
+        if target is None:
+            return f"（已拒绝：路径越出工作目录 {self.cwd.resolve()}）"
+        if not target.is_file():
+            return f"（读取失败：文件不存在 {target}）"
+        try:
+            lines = target.read_text(encoding="utf-8", errors="replace").split("\n")
+        except OSError as e:
+            return f"（读取异常：{e}）"
+        offset = max(0, int(kv.get("offset", 1)) - 1) if kv.get("offset") else 0
+        limit = int(kv.get("limit", 0)) if kv.get("limit") else 0
+        segment = lines[offset:offset + limit] if limit > 0 else lines[offset:]
+        width = max(1, len(str(offset + len(segment))))
+        out = []
+        for i, line in enumerate(segment, start=offset + 1):
+            out.append(f"{i:>{width}}\t{line}")
+        header = f"== {target} ({len(lines)} 行"
+        if offset > 0 or limit > 0:
+            header += f"，显示 {offset + 1}-{offset + len(segment)}"
+        header += "） =="
+        return header + "\n" + "\n".join(out)
+
+    def _edit(self, payload: str) -> str:
+        """精确字符串替换（old → new），类似 Claude Code str_replace。"""
+        parsed = _parse_edit_payload(payload)
+        if not parsed:
+            return "（编辑失败：载荷格式应为 path: 行 + ---OLD---/---NEW---/---END--- 围栏）"
+        path, old_text, new_text = parsed
+        target = self._resolve_path(path)
+        if target is None:
+            return f"（已拒绝：路径越出工作目录 {self.cwd.resolve()}）"
+        if not target.is_file():
+            return f"（编辑失败：文件不存在 {target}）"
+        if not self.allow_file_write:
+            return "（已拒绝：文件写入未启用，请在 config 打开 enable_file_write）"
+        try:
+            content = target.read_text(encoding="utf-8")
+        except OSError as e:
+            return f"（读取异常：{e}）"
+        count = content.count(old_text)
+        if count == 0:
+            return "（编辑失败：未找到匹配的旧文本）"
+        if count > 1:
+            return f"（编辑失败：旧文本匹配到 {count} 处，不唯一，请缩小匹配范围）"
+        new_content = content.replace(old_text, new_text, 1)
+        try:
+            target.write_text(new_content, encoding="utf-8")
+        except OSError as e:
+            return f"（写入异常：{e}）"
+        return f"已编辑 {target}（1 处替换，{len(old_text)}→{len(new_text)} 字符）"
+
+    def _grep(self, payload: str) -> str:
+        """正则搜索文件内容（Python re，排除常见目录）。"""
+        kv = _parse_kv_payload(payload)
+        pattern = kv.get("pattern", "").strip()
+        if not pattern:
+            return "（搜索失败：缺少 pattern 字段）"
+        search_path = kv.get("path", ".").strip() or "."
+        target = self._resolve_path(search_path)
+        if target is None:
+            return f"（已拒绝：路径越出工作目录 {self.cwd.resolve()}）"
+        try:
+            regex = re.compile(pattern)
+        except re.error as e:
+            return f"（搜索失败：正则无效：{e}）"
+        exclude_dirs = {".git", ".venv", "node_modules", "__pycache__", "dist", "build"}
+        results = []
+        if target.is_file():
+            files = [target]
+        else:
+            files = [p for p in target.rglob("*") if p.is_file()
+                     and not any(part in exclude_dirs for part in p.parts)]
+        for fp in files:
+            try:
+                for i, line in enumerate(fp.read_text(encoding="utf-8", errors="replace").split("\n"), 1):
+                    if regex.search(line):
+                        try:
+                            rel = str(fp.relative_to(self.cwd.resolve()))
+                        except ValueError:
+                            rel = str(fp)
+                        results.append(f"{rel}:{i}: {line[:200]}")
+                        if len(results) >= 100:
+                            break
+            except (OSError, UnicodeDecodeError):
+                continue
+            if len(results) >= 100:
+                break
+        if not results:
+            return f"（无匹配：pattern={pattern}）"
+        suffix = "\n…（结果过多，仅显示前 100 条）" if len(results) >= 100 else ""
+        return f"（{len(results)} 条匹配）\n" + "\n".join(results) + suffix
+
+    def _glob(self, payload: str) -> str:
+        """文件模式匹配（fnmatch，** 递归，排除常见目录）。"""
+        kv = _parse_kv_payload(payload)
+        pattern = kv.get("pattern", "").strip()
+        if not pattern:
+            return "（匹配失败：缺少 pattern 字段）"
+        root = self.cwd.resolve()
+        exclude_dirs = {".git", ".venv", "node_modules", "__pycache__", "dist", "build"}
+        results = []
+        if "**" in pattern:
+            suffix = pattern.split("**/")[-1] if "**/" in pattern else pattern.lstrip("*")
+            for p in root.rglob(suffix):
+                if p.is_file():
+                    try:
+                        rel = p.relative_to(root)
+                        if not any(part in exclude_dirs for part in rel.parts):
+                            results.append(str(rel))
+                    except ValueError:
+                        pass
+        else:
+            for p in root.glob(pattern):
+                if p.is_file():
+                    try:
+                        rel = p.relative_to(root)
+                        if not any(part in exclude_dirs for part in rel.parts):
+                            results.append(str(rel))
+                    except ValueError:
+                        pass
+        results.sort()
+        if not results:
+            return f"（无匹配：pattern={pattern}）"
+        return f"（{len(results)} 个文件）\n" + "\n".join(results[:200])
+
+
+def _parse_kv_payload(payload: str) -> dict:
+    """解析 key: value 格式载荷（read/grep/glob 用），每行一个键值对。"""
+    kv = {}
+    for line in payload.split("\n"):
+        s = line.strip()
+        if ":" in s and not s.startswith("---"):
+            k, v = s.split(":", 1)
+            kv[k.strip().lower()] = v.strip()
+    return kv
+
+
+def _parse_edit_payload(payload: str):
+    """解析 edit 载荷：path: 行 + ---OLD---/---NEW---/---END--- 围栏。
+    返回 (path, old_text, new_text)；格式错误返回 None。"""
+    plines = payload.split("\n")
+    path = None
+    old_idx = new_idx = end_idx = None
+    for i, line in enumerate(plines):
+        s = line.strip()
+        if s.lower().startswith("path:") and path is None:
+            path = s[5:].strip()
+        elif s == "---OLD---":
+            old_idx = i
+        elif s == "---NEW---":
+            new_idx = i
+        elif s == "---END---":
+            end_idx = i
+            break
+    if path and old_idx is not None and new_idx is not None and end_idx is not None:
+        if old_idx < new_idx < end_idx:
+            old_text = "\n".join(plines[old_idx + 1:new_idx])
+            new_text = "\n".join(plines[new_idx + 1:end_idx])
+            return path, old_text, new_text
+    return None
 
 
 def _parse_write_payload(payload: str):

@@ -88,7 +88,7 @@ DEFAULT_PROMPTS: dict[str, str] = {
         "如需真实执行（跑命令 / 写文件），可在 [RESULT] 前追加执行块，框架在启用执行器时"
         "真实执行并把回显交给 OBSERVE：\n"
         "[EXEC: shell] + 围栏代码块（要执行的命令）；或\n"
-        "[EXEC: write] + 新格式块（path: 相对路径 + ---BEGIN---/---END--- 围栏，内容无需转义；旧 JSON 格式仍兼容）。\n"
+        "[EXEC: read] + path 行（读文件带行号，支持 offset/limit 分段）；[EXEC: write] + path+---BEGIN---/---END--- 围栏；[EXEC: edit] + path+---OLD---/---NEW---/---END--- 精确替换；[EXEC: grep] + pattern 行（正则搜索，可选 path）；[EXEC: glob] + pattern 行（文件匹配）。\n"
         "执行器未启用时会被拒绝，你仍应给出 [RESULT] 供人工取用。"
     ),
     "observe": (
