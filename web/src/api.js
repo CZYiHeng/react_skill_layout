@@ -89,21 +89,46 @@ export function reviewFile(markdown) {
 /**
  * 打开 SSE 事件流。每条事件回调 onEvent(data)；流结束回调 onEnd()。
  * 返回关闭函数。
+ *
+ * 重连策略：收到 done/error 事件标记正常结束并 close；异常断线不主动 close，
+ * 交由原生 EventSource 自动重连（默认约 3s 间隔）；连续错误超上限后放弃。
+ * 注意：后端事件队列取走即移除，重连不补放断线期间的事件（后续事件正常接收）。
  */
 export function openEventStream(sessionId, onEvent, onEnd) {
   const url = `${BASE}/events?session_id=${encodeURIComponent(sessionId)}`
   const es = new EventSource(url)
+  let normalEnd = false
+  let errorCount = 0
+  const MAX_ERRORS = 10  // 原生重连连续失败上限，超过则放弃
+
   es.onmessage = (e) => {
     try {
-      onEvent(JSON.parse(e.data))
+      const data = JSON.parse(e.data)
+      if (data.type === 'done' || data.type === 'error') {
+        normalEnd = true
+      }
+      errorCount = 0  // 收到任何消息重置错误计数
+      onEvent(data)
     } catch {
       // 忽略无法解析的帧
     }
   }
   es.onerror = () => {
-    // done/error 事件后服务端会关闭连接，此处统一收口
-    es.close()
-    if (onEnd) onEnd()
+    if (normalEnd) {
+      es.close()
+      if (onEnd) onEnd()
+      return
+    }
+    // 异常断线：不调用 close，让原生 EventSource 自动重连
+    errorCount++
+    if (errorCount >= MAX_ERRORS) {
+      es.close()
+      if (onEnd) onEnd()
+    }
+    // 否则静默等待原生重连（约 3s 后自动重试）
   }
-  return () => es.close()
+  return () => {
+    normalEnd = true
+    es.close()
+  }
 }
