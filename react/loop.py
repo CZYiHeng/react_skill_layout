@@ -69,8 +69,7 @@ def parse_check(raw: str) -> str:
 
 
 _EXEC_FENCE_RE = re.compile(
-    r"```[a-zA-Z]*[ \t]*\n(.*?)\n```"
-    r"(?=\s*(?:\[EXEC:|\[RESULT\]|\[CHECK\]|\[FORMAT\]|$))",
+    r"```[a-zA-Z]*[ \t]*\n(.*?)\n```",
     re.DOTALL)
 
 # 执行标记必须「另起一行」才算数。否则正文里引用一句
