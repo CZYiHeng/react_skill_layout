@@ -725,3 +725,56 @@ def check_native_tools() -> list[str]:
     if any(m.get("tool_calls") for m in msgs):
         failures.append("缺回执的 assistant(tool_calls) 未被清理（仍会 400）")
     return failures
+
+def check_token_stats() -> list[str]:
+    """会话级 token 统计：loop 记录、usage 含 cached、持久化与汇总。"""
+    failures: list[str] = []
+    import tempfile
+
+    from react.action import ActionRegistry
+    from react.context import SessionContext
+    from react.model import MockClient
+    from react.render import RichRenderer
+    from react.token_stats import (load_session_stats, list_session_stats,
+                                   save_session_stats, summarize)
+    from .run_all import _RecordingExecutor
+
+    render = RichRenderer(None, show_reasoning=False)
+    registry = ActionRegistry()
+    registry.load(Path(r"G:\react-agent\skills"))
+    model = MockClient(emit_file_tools=True)
+    recorder = _RecordingExecutor()
+    ctx = SessionContext(max_rounds=5, max_context_messages=12)
+    loop = ReActLoop(registry, ctx, model, render, gate=None,
+                     ask=lambda q: "冒烟回答：输入已确认", executor=recorder)
+    loop.run("token 统计测试任务")
+
+    if not loop.token_stats:
+        failures.append("loop 未记录任何 token 调用明细")
+    if not any(r.get("phase") == "act" for r in loop.token_stats):
+        failures.append("token 明细缺少 ACT 阶段记录")
+    if not any(r.get("usage", {}).get("cached") is not None for r in loop.token_stats):
+        failures.append("usage 缺少 cached（缓存命中）字段")
+    if not all(r.get("ts") for r in loop.token_stats):
+        failures.append("token 明细缺少时间戳")
+
+    # 持久化 + 汇总
+    with tempfile.TemporaryDirectory() as _td:
+        base = Path(_td)
+        save_session_stats(base, "test_sid", {"task": "测试", "status": "done",
+                                              "rounds": 2, "created": "2026-01-01 00:00:00"},
+                           loop.token_stats)
+        data = load_session_stats(base, "test_sid")
+        if data is None or data["session_id"] != "test_sid":
+            failures.append("会话统计持久化/读取失败")
+        if data["task"] != "测试" or data["rounds"] != 2:
+            failures.append("会话统计元数据丢失")
+        sm = summarize(loop.token_stats)
+        if sm["calls"] != len(loop.token_stats):
+            failures.append("汇总调用次数与明细不一致")
+        if sm["cached_tokens"] <= 0:
+            failures.append("汇总缓存命中 token 为 0（MockClient 应提供缓存值）")
+        listing = list_session_stats(base)
+        if len(listing) != 1 or listing[0]["summary"]["calls"] != len(loop.token_stats):
+            failures.append("会话列表汇总错误")
+    return failures

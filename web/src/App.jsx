@@ -7,6 +7,7 @@ import GateBar from './components/GateBar'
 import Sidebar from './components/Sidebar'
 import SettingsModal from './components/SettingsModal'
 import ReviewModal from './components/ReviewModal'
+import TokenStats from './components/TokenStats'
 import SolutionCard from './components/SolutionCard'
 import StepPanel from './components/StepPanel'
 import { initialState, reducer } from './store'
@@ -81,7 +82,7 @@ export default function App() {
   const streamRef = useRef(null)
   const stickRef = useRef(true)          // 是否贴底（决定新内容是否自动跟随）
   const [showBack, setShowBack] = useState(false)  // 是否显示"回到底部"按钮
-  const [view, setView] = useState('chat')  // chat | settings | review
+  const [view, setView] = useState('chat')  // chat | settings | review | stats
   const [manualCollapsed, setManualCollapsed] = useState(() => new Set())  // 手动覆盖默认展开态的轮次键（task-n）
   const steerFocusedRef = useRef(false)      // 纠偏输入框聚焦时暂停 auto 倒计时
   const [gateCountdown, setGateCountdown] = useState(null)  // auto 闸门倒计时剩余秒数（null=不显示）
@@ -450,6 +451,7 @@ export default function App() {
             <button className={view === 'chat' ? 'tab on' : 'tab'} onClick={() => setView('chat')}>对话</button>
             <button className={view === 'settings' ? 'tab on' : 'tab'} onClick={() => setView('settings')}>设置</button>
             <button className={view === 'review' ? 'tab on' : 'tab'} onClick={() => setView('review')}>审查</button>
+            <button className={view === 'stats' ? 'tab on' : 'tab'} onClick={() => setView('stats')}>统计</button>
           </div>
           <div className={`status-pill status-${state.status}`}>{state.status}</div>
         </div>
@@ -493,6 +495,10 @@ export default function App() {
 
         <div className={view === 'review' ? 'host-pane' : 'host-pane pane-hidden'}>
           <ReviewModal inline sessionId={state.sessionId} onClose={() => {}} />
+        </div>
+
+        <div className={view === 'stats' ? 'host-pane' : 'host-pane pane-hidden'}>
+          <TokenStats sessionId={state.sessionId} />
         </div>
 
         {showBack ? (

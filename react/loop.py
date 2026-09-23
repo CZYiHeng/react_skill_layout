@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Callable, Protocol
 
@@ -413,6 +414,8 @@ class ReActLoop:
     last_act_result: str = field(default="", init=False)
     # 原生工具循环标记：_step 执行了真实工具时置 True（ACT 循环据此继续）
     _tool_loop_pending: bool = field(default=False, init=False)
+    # 会话级 token 统计：每次模型调用追加一条 {phase, tokens, usage, elapsed_sec, ts}
+    token_stats: list = field(default_factory=list, init=False)
 
     # ------------------------------------------------------------------
 
@@ -751,6 +754,14 @@ class ReActLoop:
         # 控制阶段常无正文（决策/判定在工具参数里）：用工具渲染兜底，保展示与历史可见
         if not parsed.strip() and resp.tool_name:
             parsed = render_tool_text(action_name, resp.tool_name, resp.tool_args)
+        self.token_stats.append({
+            "phase": action_name,
+            "tokens": resp.tokens,
+            "usage": resp.usage or {"prompt": 0, "completion": resp.tokens,
+                                    "total": resp.tokens, "cached": 0},
+            "elapsed_sec": round(resp.elapsed_sec, 3),
+            "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+        })
         out = StepOutput(action=action_name, raw=resp.text, parsed=parsed,
                          elapsed_sec=resp.elapsed_sec, tokens=resp.tokens,
                          reasoning=resp.reasoning,

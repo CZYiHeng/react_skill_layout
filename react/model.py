@@ -129,6 +129,8 @@ class OpenAIClient:
                     "prompt": u.prompt_tokens or 0,
                     "completion": u.completion_tokens or 0,
                     "total": u.total_tokens or 0,
+                    "cached": (getattr(getattr(u, "prompt_tokens_details", None),
+                                       "cached_tokens", None) or 0),
                 }
             if not chunk.choices:
                 continue
@@ -282,5 +284,8 @@ class MockClient:
                 "function": {"name": tname,
                              "arguments": json.dumps(targs or {}, ensure_ascii=False)},
             }]
-        return ModelResponse(text=text, tokens=len(text) // 2, elapsed_sec=0.01,
-                             tool_name=tname, tool_args=targs, tool_calls=tool_calls)
+        _tok = len(text) // 2
+        return ModelResponse(text=text, tokens=_tok, elapsed_sec=0.01,
+                             tool_name=tname, tool_args=targs, tool_calls=tool_calls,
+                             usage={"prompt": 200, "completion": _tok,
+                                    "total": 200 + _tok, "cached": 150})

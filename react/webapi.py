@@ -19,6 +19,7 @@ import asyncio
 import json
 import queue
 import sys
+import time
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -59,6 +60,8 @@ class Session:
     done: threading.Event = field(default_factory=threading.Event)
     status: str = "idle"                 # idle / running / done / error / aborted
     last_result: dict | None = None
+    created: str = ""                    # 会话创建时间（token 统计元数据）
+    token_stats: list = field(default_factory=list)  # 会话级 token 调用明细
 
 
 class SessionManager:
@@ -122,6 +125,7 @@ def _run_task(sess: Session, task: str, cfg: dict, allow_exec: bool | None,
         if svc.work_dir_warning:
             sess.out.put(AgentEvent("warn", text=svc.work_dir_warning))
         sess.status = "running"
+        runtime.loop.token_stats = sess.token_stats  # 会话级 token 统计接入循环
         result = runtime.loop.run(task)
         sess.last_result = {"status": result.status, "rounds": result.rounds,
                             "final_text": result.final_text}
@@ -131,6 +135,7 @@ def _run_task(sess: Session, task: str, cfg: dict, allow_exec: bool | None,
         sess.status = "error"
         sess.out.put(AgentEvent("error", text=f"{type(e).__name__}: {e}"))
     finally:
+        _persist_stats(sess, task)
         sess.done.set()
 
 
@@ -146,6 +151,7 @@ async def api_session(request: Request) -> JSONResponse:
     svc = _service(cfg)
     registry = svc.build_registry()
     sess = MANAGER.create(svc.build_context(), registry, QueueControl())
+    sess.created = time.strftime("%Y-%m-%d %H:%M:%S")
     # 阻塞等 gate 时推事件，前端据此显示「继续 / 纠偏 / 中止」步进条
     # reason 告诉前端「为什么停在这里」（步骤完成 / 发现缺陷 / 最终验收）
     sess.control.on_gate_wait = lambda action, reason="": sess.out.put(
@@ -287,6 +293,41 @@ async def api_save(request: Request) -> JSONResponse:
     if sess is None:
         return JSONResponse({"error": "会话不存在"}, status_code=404)
     return JSONResponse({"markdown": sess.context.export_markdown()})
+
+
+def _persist_stats(sess: Session, task: str) -> None:
+    """把会话 token 统计原子写入磁盘（重启后仍可查）。"""
+    try:
+        from react.token_stats import save_session_stats
+        save_session_stats(BASE_DIR, sess.id, {
+            "task": task,
+            "status": sess.status,
+            "rounds": (sess.last_result or {}).get("rounds"),
+            "created": sess.created,
+        }, sess.token_stats)
+    except Exception:  # noqa: BLE001 - 统计写入失败不影响会话主流程
+        pass
+
+
+async def api_token_stats(request: Request) -> JSONResponse:
+    """会话级 token 统计：?session_id=xxx 返回单会话明细+汇总；无参数返回全部会话汇总。"""
+    from react.token_stats import load_session_stats, list_session_stats, summarize
+    sid = request.query_params.get("session_id", "")
+    if sid:
+        sess = MANAGER.get(sid)
+        data = load_session_stats(BASE_DIR, sid)
+        if data is None and sess is None:
+            return JSONResponse({"error": "会话不存在"}, status_code=404)
+        if sess is not None:
+            # 内存态会话优先（含尚未持久化的最新调用）
+            data = data or {}
+            data["session_id"] = sess.id
+            data["status"] = sess.status
+            data["task"] = data.get("task", "")
+            data["calls"] = sess.token_stats
+        data["summary"] = summarize(data.get("calls", []))
+        return JSONResponse(data)
+    return JSONResponse({"sessions": list_session_stats(BASE_DIR)})
 
 
 
@@ -514,6 +555,7 @@ def create_app() -> Starlette:
         Route("/api/config", api_config_put, methods=["PUT", "POST"]),
         Route("/api/review/current", api_review_current, methods=["POST"]),
         Route("/api/review/file", api_review_file, methods=["POST"]),
+        Route("/api/token_stats", api_token_stats, methods=["GET"]),
     ]
     if DIST_DIR.is_dir():
         routes.append(Mount("/assets", StaticFiles(directory=DIST_DIR / "assets"),

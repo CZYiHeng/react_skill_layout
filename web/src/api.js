@@ -100,6 +100,11 @@ export function reviewFile(markdown) {
   })
 }
 
+export function getTokenStats(sessionId = '') {
+  const q = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''
+  return request(`/token_stats${q}`, { method: 'GET' })
+}
+
 /**
  * 打开 SSE 事件流。每条事件回调 onEvent(data)；流结束回调 onEnd()。
  * 返回关闭函数。
