@@ -72,6 +72,20 @@ export function saveConfig(config) {
   })
 }
 
+/**
+ * 统一配置结构：后端两套字段名（/api/session 返回精简结构 shell/file_write/sandbox，
+ * /api/config 返回文件原始结构 enable_shell_exec/enable_file_write/sandbox_shell）。
+ * 合并输出，两种字段都保留——Sidebar 徽章读精简字段、store 读文件字段均可用。
+ * 精简字段优先保留已有值（避免 /api/session 结构被误映射为 false）。
+ */
+export function normalizeConfig(full) {
+  const cfg = { ...(full || {}) }
+  if (!('shell' in cfg)) cfg.shell = !!cfg.enable_shell_exec
+  if (!('file_write' in cfg)) cfg.file_write = !!cfg.enable_file_write
+  if (!('sandbox' in cfg)) cfg.sandbox = !!cfg.sandbox_shell
+  return cfg
+}
+
 export function reviewCurrent(sessionId) {
   return request('/review/current', {
     method: 'POST',

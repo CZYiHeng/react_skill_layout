@@ -110,10 +110,14 @@ export default function App() {
       if (cancelled) return
       api
         .createSession()
-        .then((data) => {
+        .then(async (data) => {
           if (cancelled) return
           dispatch({ type: 'session', sessionId: data.session_id,
-                     config: data.config, binds: data.binds })
+                     config: api.normalizeConfig(data.config), binds: data.binds })
+          // 补拉全量配置（含 profiles/active_profile），保证模型档案下拉完整
+          const d = await api.getConfig()
+          if (cancelled) return
+          dispatch({ type: 'config_update', config: api.normalizeConfig(d.config || {}) })
         })
         .catch((e) => dispatch({ type: 'error', message: `建会话失败：${e.message}` }))
     }
@@ -436,7 +440,7 @@ export default function App() {
         onSwitchModel={async (name) => {
           await api.saveConfig({ active_profile: name })
           const d = await api.getConfig()
-          dispatch({ type: 'config_update', config: d.config || {} })
+          dispatch({ type: 'config_update', config: api.normalizeConfig(d.config || {}) })
         }}
       />
 
@@ -482,7 +486,7 @@ export default function App() {
         <div className={view === 'settings' ? 'host-pane' : 'host-pane pane-hidden'}>
           <SettingsModal inline allowOutside={state.allowOutside} onSaved={() => {
             api.getConfig().then((d) => {
-              dispatch({ type: 'config_update', config: d.config || {} })
+              dispatch({ type: 'config_update', config: api.normalizeConfig(d.config || {}) })
             }).catch(() => {})
           }} onClose={() => {}} />
         </div>
@@ -529,7 +533,7 @@ export default function App() {
           onSaved={() => {
             // 配置已写回文件：只更新 config 相关字段，不动 items/live/awaiting
             api.getConfig().then((d) => {
-              dispatch({ type: 'config_update', config: d.config || {} })
+              dispatch({ type: 'config_update', config: api.normalizeConfig(d.config || {}) })
             }).catch(() => {})
           }}
         />
