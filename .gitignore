@@ -9,6 +9,9 @@ __pycache__/
 # 本机执行器落地产物（enable_file_write 打开时）
 /output/
 
+# 运行时数据（token 统计等，每会话生成，勿入库）
+/data/
+
 # 前端（web/）：依赖与构建产物不入库，只留源码
 web/node_modules/
 web/dist/
