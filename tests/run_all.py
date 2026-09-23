@@ -27,10 +27,15 @@ class _RecordingExecutor:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
+        self.tool_calls: list[tuple[str, dict]] = []
 
     def run(self, kind: str, payload: str) -> str:
         self.calls.append((kind, payload))
         return "[exec-out] 冒烟执行回显"
+
+    def run_tool(self, name: str, args: dict) -> str:
+        self.tool_calls.append((name, args))
+        return "[tool-out] 冒烟工具回显"
 
 
 def run_smoke(live: bool, skills_dir: Path, base_dir: Path,
@@ -90,6 +95,7 @@ def run_smoke(live: bool, skills_dir: Path, base_dir: Path,
     failures += C.check_gate_mode()
     failures += C.check_interrupt()
     failures += C.check_work_dir(base_dir)
+    failures += C.check_native_tools()
     return failures, None
 
 

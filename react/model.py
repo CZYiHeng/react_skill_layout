@@ -193,7 +193,7 @@ class MockClient:
     """
 
     def __init__(self, verify_fail_once: bool = False, observe_defect_once: bool = False,
-                 emit_exec: bool = False):
+                 emit_exec: bool = False, emit_file_tools: bool = False):
         self.calls: list[str] = []         # 记录被调用的 system 提示，供断言
         self.tools_seen: list[tuple] = []  # 每次调用被注入的工具名，供断言
         self.verify_fail_once = verify_fail_once
@@ -201,6 +201,8 @@ class MockClient:
         self.observe_defect_once = observe_defect_once
         self._observed_defect = False
         self.emit_exec = emit_exec         # ACT 是否附带 [EXEC: shell] 块（验证执行器接线）
+        self.emit_file_tools = emit_file_tools  # ACT 是否调用原生 read 工具（验证工具循环）
+        self._file_tool_step = 0
 
     def complete(self, messages: list[dict], on_token: StreamCallback | None = None,
                  tools: list[dict] | None = None) -> ModelResponse:
@@ -232,10 +234,20 @@ class MockClient:
                     "1. 完成冒烟步骤一 | 完成标准：包含甲内容\n"
                     "2. 完成冒烟步骤二 | 完成标准：包含乙内容")
         elif "# 当前阶段：ACT" in system:
-            exec_block = "[EXEC: shell]\n```bash\necho 冒烟执行\n```\n" if self.emit_exec else ""
-            text = ("[CHECK] 本步骤成功标准：包含甲内容\n"
-                    + exec_block
-                    + "[RESULT] 冒烟测试产物：步骤执行完毕，输出符合预期。")
+            if self.emit_file_tools:
+                # 原生工具循环：首次 ACT 调 read 工具，二次产出最终产物
+                self._file_tool_step += 1
+                if self._file_tool_step == 1:
+                    tname, targs = "read", {"path": "src/main.py", "offset": 1, "limit": 20}
+                    text = "[CHECK] 本步骤成功标准：包含甲内容\n（先读取文件确认现状）"
+                else:
+                    text = ("[CHECK] 本步骤成功标准：包含甲内容\n"
+                            "[RESULT] 冒烟测试产物：已读取文件并产出符合预期的结果。")
+            else:
+                exec_block = "[EXEC: shell]\n```bash\necho 冒烟执行\n```\n" if self.emit_exec else ""
+                text = ("[CHECK] 本步骤成功标准：包含甲内容\n"
+                        + exec_block
+                        + "[RESULT] 冒烟测试产物：步骤执行完毕，输出符合预期。")
         elif "# 当前阶段：OBSERVE" in system:
             if self.observe_defect_once and not self._observed_defect:
                 self._observed_defect = True

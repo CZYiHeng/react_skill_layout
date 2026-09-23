@@ -85,10 +85,10 @@ DEFAULT_PROMPTS: dict[str, str] = {
         "宁可详尽不可残缺。\n"
         "如产物适合结构化展示，可在 [RESULT] 前加一行声明："
         "[FORMAT: table|json|code|plan|diff|md]；不声明则自动识别，不强制要求。\n"
-        "如需真实执行（跑命令 / 写文件），可在 [RESULT] 前追加执行块，框架在启用执行器时"
-        "真实执行并把回显交给 OBSERVE：\n"
-        "[EXEC: shell] + 围栏代码块（要执行的命令）；或\n"
-        "[EXEC: read] + path 行（读文件带行号，支持 offset/limit 分段）；[EXEC: write] + path+---BEGIN---/---END--- 围栏；[EXEC: edit] + path+---OLD---/---NEW---/---END--- 精确替换；[EXEC: grep] + pattern 行（正则搜索，可选 path）；[EXEC: glob] + pattern 行（文件匹配）。\n"
+        "需要读写文件或跑命令时，直接调用框架提供的工具（read/write/edit/grep/glob/shell），"
+        "工具可连续多次调用（如 先 read → 再 edit → 再 read 核对），框架自动循环执行并把回显交给 OBSERVE。\n"
+        "无法调用工具时可退回文本协议：[EXEC: read] + path 行 / [EXEC: write] + path+---BEGIN---/---END--- 围栏 / "
+        "[EXEC: edit] + path+---OLD---/---NEW---/---END--- / [EXEC: grep] + pattern 行 / [EXEC: glob] + pattern 行 / [EXEC: shell] + 命令。\n"
         "执行器未启用时会被拒绝，你仍应给出 [RESULT] 供人工取用。"
     ),
     "observe": (

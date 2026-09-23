@@ -289,6 +289,62 @@ VERDICT_TOOL: dict = {
     },
 }
 
+# ---- 文件操作原生工具（对标 Claude Code：Read/Grep/Glob/Write/Edit/Bash） ----
+# ACT 阶段注入给模型，模型直接调用，框架执行并把结果以 role=tool 回写历史。
+# 文本协议 [EXEC: ...] 保留为兜底（kimi 等模型工具调用可能缺失）。
+
+_ACT_TOOL_DESC = {
+    "read": "读取文件内容（带行号，cat -n 风格）。path 相对工作目录。"
+            "默认最多读 2000 行、单行截断 2000 字符；大文件用 offset/limit 翻页。"
+            "修改文件前必须先 read。",
+    "write": "覆盖写入文件（新文件或整体替换）。path 相对工作目录，越界拒绝。"
+             "小改动优先用 edit。",
+    "edit": "精确字符串替换（只替换一处）。old_text 必须与文件内容完全匹配且唯一。"
+            "比 write 安全，适合小改动。",
+    "grep": "正则搜索文件内容，返回 file:line:content。pattern 用 Python 正则；"
+            "可选 path 限定搜索目录（默认整个工作目录）。",
+    "glob": "按通配模式列出文件（如 *.py、**/*.md）。path 相对工作目录。",
+    "shell": "执行 shell 命令（跑测试 / git / 安装依赖等非文件操作）。"
+             "Windows 用 cmd 语法，不要用 nohup/find/heredoc。",
+}
+
+FILE_TOOLS: list[dict] = [
+    {"type": "function", "function": {
+        "name": name,
+        "description": desc,
+        "parameters": {"type": "object", "properties": props, "required": req},
+    }}
+    for name, desc, props, req in [
+        ("read", _ACT_TOOL_DESC["read"],
+         {"path": {"type": "string", "description": "文件相对路径"},
+          "offset": {"type": "integer", "description": "起始行号（1 起），配合 limit 翻页"},
+          "limit": {"type": "integer", "description": "读取行数上限（默认 2000）"}},
+         ["path"]),
+        ("write", _ACT_TOOL_DESC["write"],
+         {"path": {"type": "string", "description": "文件相对路径"},
+          "content": {"type": "string", "description": "完整文件内容"}},
+         ["path", "content"]),
+        ("edit", _ACT_TOOL_DESC["edit"],
+         {"path": {"type": "string", "description": "文件相对路径"},
+          "old_text": {"type": "string", "description": "要替换的旧文本（必须唯一匹配）"},
+          "new_text": {"type": "string", "description": "替换后的新文本"}},
+         ["path", "old_text", "new_text"]),
+        ("grep", _ACT_TOOL_DESC["grep"],
+         {"pattern": {"type": "string", "description": "Python 正则表达式"},
+          "path": {"type": "string", "description": "搜索目录/文件（默认工作目录）"}},
+         ["pattern"]),
+        ("glob", _ACT_TOOL_DESC["glob"],
+         {"pattern": {"type": "string", "description": "通配模式，如 *.py 或 **/*.md"}},
+         ["pattern"]),
+        ("shell", _ACT_TOOL_DESC["shell"],
+         {"command": {"type": "string", "description": "要执行的命令"}},
+         ["command"]),
+    ]
+]
+
+# 工具循环防死循环上限（对标 Claude 的自动工具使用，但加护栏）
+_TOOL_LOOP_MAX = 12
+
 
 def render_tool_text(action: str, name: str, args: dict | None) -> str:
     """把工具调用渲染成人类可读文本（用于展示与历史账本，保持轨迹可见）。"""
@@ -355,6 +411,8 @@ class ReActLoop:
     _ask_count: int = field(default=0, init=False)
     # 最近一次 ACT 阶段的 [RESULT] 产物（VERIFY 通过时作为 final_text，避免取到工具回执）
     last_act_result: str = field(default="", init=False)
+    # 原生工具循环标记：_step 执行了真实工具时置 True（ACT 循环据此继续）
+    _tool_loop_pending: bool = field(default=False, init=False)
 
     # ------------------------------------------------------------------
 
@@ -444,6 +502,35 @@ class ReActLoop:
                           f"达到最大轮数 {self.context.max_rounds}，请人工接管")
 
     # ------------------------------------------------------------------
+    # ACT：原生工具循环（对标 Claude Code 的自由工具调用）
+    # ------------------------------------------------------------------
+
+    def _act(self, act_prompt: str) -> StepOutput:
+        """ACT 阶段支持原生工具调用：模型可连续调用 read/write/edit/grep/glob/shell，
+        每次执行结果以 role=tool 回写历史，直到模型产出无工具调用的最终产物。
+
+        未绑定执行器时不注入工具（纯文本产物，等价原 _step("act")）。
+        """
+        handler = None
+        if self.executor is not None:
+            handler = lambda name, args: self.executor.run_tool(name, args)  # noqa: E731
+        last = None
+        for _ in range(_TOOL_LOOP_MAX):
+            self._tool_loop_pending = False
+            last = self._step("act", act_prompt, run_gate=False,
+                              tools=FILE_TOOLS, tool_handler=handler)
+            if self._aborted:
+                return last
+            if not self._tool_loop_pending:
+                # 产物定型：phase 档位（旧行为）在 ACT 收尾拦一次
+                if self._is_phase_mode():
+                    self._apply_gate("act")
+                return last
+            # 有工具执行：循环继续，模型基于工具结果产出/继续调用
+        self.render.warn(f"工具循环超过 {_TOOL_LOOP_MAX} 次上限，以最后输出为准")
+        return last
+
+    # ------------------------------------------------------------------
     # 单轮执行段：PLAN（可选）→ ACT → OBSERVE
     # ------------------------------------------------------------------
 
@@ -470,7 +557,7 @@ class ReActLoop:
             # 修正反馈先入历史账本（可追溯），ACT 请求经历史看到它
             self.context.add_user(self.feedback)
             self.feedback = ""  # 消费后清空；若仍不通过，OBSERVE 会生成新反馈
-        act_out = self._step("act", act_prompt)
+        act_out = self._act(act_prompt)
         if self._aborted:
             return
         result_text = act_out.parsed
@@ -643,7 +730,8 @@ class ReActLoop:
 
     def _step(self, action_name: str, step_prompt: str,
               run_gate: bool | None = None,
-              tools: list[dict] | None = None) -> StepOutput:
+              tools: list[dict] | None = None,
+              tool_handler=None) -> StepOutput:
         """跑一个阶段。run_gate=None 时按档位推导：仅 phase 档保留「每阶段都拦」。"""
         if run_gate is None:
             run_gate = self._is_phase_mode()
@@ -674,8 +762,21 @@ class ReActLoop:
         if resp.tool_calls:
             content = parsed or resp.text or ""
             self.context.add_assistant(text=content, tool_calls=resp.tool_calls)
-            for tc in resp.tool_calls:
-                self.context.add_tool(tc["id"], content or "ok")
+            if tool_handler is not None:
+                # 原生工具循环：逐个执行真实工具，结果以 role=tool 回写（对标 Claude）
+                for tc in resp.tool_calls:
+                    name = tc["function"]["name"]
+                    try:
+                        args = json.loads(tc["function"]["arguments"] or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+                    result = tool_handler(name, args)
+                    self.context.add_tool(tc["id"], result)
+                    self.render.info(f"↳ 工具 {name} → {result[:300]}")
+                self._tool_loop_pending = True
+            else:
+                for tc in resp.tool_calls:
+                    self.context.add_tool(tc["id"], content or "ok")
         elif resp.tool_name and not resp.text.strip():
             self.context.add_assistant(parsed)
         else:

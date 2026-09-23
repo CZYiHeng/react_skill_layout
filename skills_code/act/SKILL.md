@@ -53,45 +53,21 @@ def function_name(...):
 - 结构化日志格式：`业务动作名 | 阶段(IN/MAP/ERR/OUT) | key=value`；**禁止记录**密钥/token/完整 PII/大体积载荷。
 - `print()`/`console.log()` 也算副作用（stdout 写），必须在 `SIDE` 声明。
 
-## 真实落地（文件操作工具）
+## 真实落地（原生工具调用）
 
-需要读写文件时，在 `[RESULT]` 之后追加执行块——**执行器启用时**才真执行，否则仍给 `[RESULT]` 供人工取用。
+需要读写代码文件时，**直接调用框架提供的工具**（执行器启用时真实执行，否则仍给 `[RESULT]` 供人工取用）。
 
-**改文件前必须先 `[EXEC: read]` 读源码**，确认现状后再用 `edit`（小改动）或 `write`（整体替换）。
+**改文件前必须先调 `read` 读源码**，确认现状后再用 `edit`（小改动）或 `write`（整体替换）。
 
-```
-[EXEC: read]
-path: 相对路径
-```
-
-```
-[EXEC: edit]
-path: 相对路径
----OLD---
-要替换的旧文本（精确匹配，必须唯一）
----NEW---
-替换后的新文本
----END---
-```
-
-```
-[EXEC: write]
-path: 相对路径
----BEGIN---
-文件完整内容（无需转义，引号/换行/反斜杠直接写）
----END---
-```
-
-```
-[EXEC: grep]
-pattern: 正则表达式
-```
-
-- `read`：读文件带行号，支持 `offset`/`limit` 分段
-- `edit`：精确字符串替换（只改一处，比 write 安全）
-- `write`：覆盖写入（新文件或整体替换），`path` 相对 cwd，越界拒绝
-- `grep`：正则搜索代码
-- 执行器未启用时，不要写 `[EXEC]` 块，只在 `[RESULT]` 给代码。
+- `read(path, offset?, limit?)`：读文件带行号，默认最多 2000 行，大文件用 offset/limit 翻页
+- `edit(path, old_text, new_text)`：精确字符串替换（只改一处；old_text 必须唯一匹配）
+- `write(path, content)`：覆盖写入（新文件或整体替换），path 相对 cwd，越界拒绝
+- `grep(pattern, path?)`：正则搜索代码
+- `glob(pattern)`：按通配模式匹配文件
+- `shell(command)`：执行命令（跑测试、git 等）
+- 工具可连续多次调用（先 read → 再 edit → 再 read 核对），框架自动循环执行
+- 无法调用工具时可退回 `[EXEC: read]`/`[EXEC: write]`/`[EXEC: edit]`/`[EXEC: shell]` 文本协议块兜底
+- 执行器未启用时，不要调用工具，只在 `[RESULT]` 给代码。
 
 ## 一致性自检（写完即查，避免头-实现漂移）
 

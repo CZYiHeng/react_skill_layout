@@ -582,3 +582,81 @@ def check_live(result, context) -> tuple[list[str], str]:
     stats = (f"live 统计：轮次={result.rounds} · tool_calls={len(tool_calls)} · "
              f"role=tool 回执={len(tool_msgs)}")
     return failures, stats
+
+def check_native_tools() -> list[str]:
+    """原生文件工具（对标 Claude Code）：run_tool 各工具 + read 默认上限 +
+    越界拒绝 + ACT 原生工具循环（工具调用→执行→回写→产物定型）。"""
+    failures: list[str] = []
+    import tempfile
+
+    from react.executor import LocalExecutor
+    from react.loop import ReActLoop
+
+    # 1) run_tool 各工具行为
+    with tempfile.TemporaryDirectory() as _td:
+        td = Path(_td)
+        (td / "a.py").write_text("line1\nline2\nline3\nline4\nline5", encoding="utf-8")
+        ex = LocalExecutor(cwd=td, allow_file_write=True)
+        out = ex.run_tool("read", {"path": "a.py"})
+        if "line1" not in out or "5 行" not in out:
+            failures.append("read 工具未输出文件内容/行数")
+        out2 = ex.run_tool("read", {"path": "a.py", "offset": 2, "limit": 2})
+        if "line2" not in out2 or "line3" not in out2 or "line1" in out2:
+            failures.append("read 工具 offset/limit 翻页不正确")
+        if "已拒绝" not in ex.run_tool("read", {"path": "../outside.py"}):
+            failures.append("read 工具未拒绝越界路径")
+        if "已写入" not in ex.run_tool("write", {"path": "b.py", "content": "x = 1\n"}):
+            failures.append("write 工具写入失败")
+        if "已编辑" not in ex.run_tool(
+                "edit", {"path": "b.py", "old_text": "x = 1", "new_text": "x = 2"}):
+            failures.append("edit 工具替换失败")
+        (td / "c.py").write_text("def foo():\n    pass\n", encoding="utf-8")
+        if "c.py:1" not in ex.run_tool("grep", {"pattern": "def "}):
+            failures.append("grep 工具未命中")
+        if "a.py" not in ex.run_tool("glob", {"pattern": "*.py"}):
+            failures.append("glob 工具未列出文件")
+        if "已拒绝" not in ex.run_tool("shell", {"command": "echo hi"}):
+            failures.append("shell 工具未按开关拒绝")
+
+    # 2) read 默认行数上限：3000 行只读前 2000 + 翻页提示（对齐 Claude）
+    with tempfile.TemporaryDirectory() as _td:
+        td = Path(_td)
+        (td / "big.py").write_text("\n".join(f"l{i}" for i in range(3000)),
+                                   encoding="utf-8")
+        ex = LocalExecutor(cwd=td)
+        out = ex.run_tool("read", {"path": "big.py"})
+        if "还有 1000 行未读" not in out:
+            failures.append("read 未按默认 2000 行上限截断并提示翻页")
+        seg = out.split("\n")
+        if any(s.startswith("2001") for s in seg):
+            failures.append("read 超限后仍输出了第 2001 行")
+
+    # 3) ACT 原生工具循环：read 工具调用 → 执行 → role=tool 回写 → 产物定型
+    from react.action import ActionRegistry
+    from react.context import SessionContext
+    from react.model import MockClient
+    from react.render import RichRenderer
+    from .run_all import _RecordingExecutor
+
+    render = RichRenderer(None, show_reasoning=False)
+    registry = ActionRegistry()
+    registry.load(Path(r"G:\react-agent\skills"))
+    model = MockClient(emit_file_tools=True)
+    recorder = _RecordingExecutor()
+    ctx = SessionContext(max_rounds=5, max_context_messages=12)
+    loop = ReActLoop(registry, ctx, model, render, gate=None,
+                     ask=lambda q: "冒烟回答：输入已确认", executor=recorder)
+    result = loop.run("原生工具测试任务")
+    if result.status != "done":
+        failures.append(f"原生工具循环未正常完成: {result.status}")
+    if not any(name == "read" for name, _ in recorder.tool_calls):
+        failures.append("ACT 未调用 read 原生工具")
+    if not any(m.get("role") == "tool" for m in ctx.messages):
+        failures.append("原生工具循环未回写 role=tool 消息")
+    if not any("tool-out" in (m.get("content") or "") for m in ctx.messages):
+        failures.append("原生工具执行结果未回写历史")
+    if result.final_text and "冒烟测试产物" not in result.final_text:
+        failures.append("工具循环最终产物应为 [RESULT] 内容")
+    if not any("read" in str(t) for t in model.tools_seen):
+        failures.append("ACT 阶段未注入 read 原生工具")
+    return failures
