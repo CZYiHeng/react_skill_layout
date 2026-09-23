@@ -11,6 +11,8 @@ GLOBAL_PROTOCOL = (
     "你处于一个显式 ReAct 循环中，每一步都是独立的推理/执行/观察阶段。"
     "你的输出将被状态机解析，必须严格遵守该阶段要求的输出格式与标签。"
     "历史消息是之前各阶段的完整轨迹，供你判断当前状态。"
+    "当前阶段的完整指令（阶段名、该阶段的规则、当前步骤）位于**最后一条 user 消息**，"
+    "以其为准执行本步。"
     "模糊任务先对齐：任务刚开始且目标不明确（含'优化''改进''做好看'等模糊词、缺少明确交付物、可被多种方式解读）时，"
     "THINK 阶段必须先 ASK 问清 1-3 个关键问题，不允许直接 PLAN/ACT——避免跑偏后返工。"
 )
@@ -128,10 +130,10 @@ class SessionContext:
     def build_step_messages(self, action: Action, step_prompt: str) -> list[dict]:
         """组装某一步的完整消息列表。
 
-        system = 全局协议 + 该动作槽位的 skill 正文 + 当前步骤指令。
-        历史做**窗口化**：始终保留首条任务锚点 + 最近 max_context_messages 条原文，
-        更早的消息折算成一行摘要放在**消息尾部**（排在 step_prompt 之后），
-        保证同阶段内 system + 历史前缀稳定，吃满 DeepSeek/kimi 的自动上下文缓存。
+        system = 全局协议 + 运行环境（**完全静态**，任意阶段/轮次相同——缓存前缀稳定）。
+        历史做**窗口化**：始终保留首条任务锚点 + 最近 max_context_messages 条原文。
+        阶段名 / skill 正文 / 步骤指令 / 历史摘要全部放在消息**尾部** user，
+        让所有调用共享同一 system 前缀，吃满 DeepSeek/kimi 的自动上下文缓存。
         只影响"发给模型的"，不动 self.messages（/save 依旧导出全量账本）。
         """
         history = self.messages
@@ -182,21 +184,20 @@ class SessionContext:
             i += 1
         windowed = cleaned
 
+        # system 完全静态化（缓存友好）：只含全局协议 + 运行环境，任意阶段/轮次调用都相同。
+        # 阶段名 / skill 正文 / 步骤指令 / 历史摘要全部放消息**尾部** user——
+        # 五阶段、多轮、工具循环的所有调用共享同一 system 前缀，
+        # DeepSeek/kimi 的自动上下文缓存（前缀命中）才能吃满。
         env_block = f"# 运行环境\n{self.env_info}\n\n" if self.env_info else ""
-        system = (
-            f"{GLOBAL_PROTOCOL}\n\n"
-            f"{env_block}"
+        system = f"{GLOBAL_PROTOCOL}\n\n{env_block}"
+        stage = (
             f"# 当前阶段：{action.name.upper()}\n\n"
             f"{action.skill_body}\n\n"
             f"# 当前步骤指令\n{step_prompt}"
         )
-        # digest 必须放在消息**尾部**、且排在 step_prompt 之后：
-        # 放在 system 中间会让每次调用的前缀随历史增长而改变，
-        # DeepSeek/kimi 的自动上下文缓存（前缀命中）全部失效。
-        # 排在尾部只影响最后一条消息，同阶段内 system + 历史前缀保持稳定。
-        tail_user = step_prompt
+        tail_user = stage
         if digest:
-            tail_user = f"{step_prompt}\n\n{digest}"
+            tail_user = f"{stage}\n\n{digest}"
         return [{"role": "system", "content": system}, *windowed,
                 {"role": "user", "content": tail_user}]
 

@@ -209,14 +209,15 @@ class MockClient:
     def complete(self, messages: list[dict], on_token: StreamCallback | None = None,
                  tools: list[dict] | None = None) -> ModelResponse:
         system = messages[0]["content"]
-        self.calls.append(system)
         history = "\n".join(m["content"] for m in messages[1:])
+        # system 已静态化（不含阶段标记）：记录完整输入文本，阶段标记在尾部 user
+        self.calls.append(system + "\n" + history)
         tool_names = {t["function"]["name"] for t in (tools or [])}
         self.tools_seen.append(tuple(sorted(tool_names)))
 
         text, tname, targs = "", "", None
 
-        if "# 当前阶段：THINK" in system:
+        if "# 当前阶段：THINK" in history:
             # 完成检测以 OBSERVE 的"通过"判定为准（缺陷/重试不算完成）
             done = "[OBSERVATION] 通过" in history
             answered = "冒烟回答" in history
@@ -231,11 +232,11 @@ class MockClient:
                 text = f"[THOUGHT] 现状：冒烟测试任务。决策理由：{reason}。\n下一步: {decision}"
             if "decide_next_step" in tool_names:
                 tname, targs = "decide_next_step", {"decision": decision, "reason": reason}
-        elif "# 当前阶段：PLAN" in system:
+        elif "# 当前阶段：PLAN" in history:
             text = ("[PLAN]\n"
                     "1. 完成冒烟步骤一 | 完成标准：包含甲内容\n"
                     "2. 完成冒烟步骤二 | 完成标准：包含乙内容")
-        elif "# 当前阶段：ACT" in system:
+        elif "# 当前阶段：ACT" in history:
             if self.emit_file_tools:
                 # 原生工具循环：首次 ACT 调 read 工具，二次产出最终产物
                 self._file_tool_step += 1
@@ -250,7 +251,7 @@ class MockClient:
                 text = ("[CHECK] 本步骤成功标准：包含甲内容\n"
                         + exec_block
                         + "[RESULT] 冒烟测试产物：步骤执行完毕，输出符合预期。")
-        elif "# 当前阶段：OBSERVE" in system:
+        elif "# 当前阶段：OBSERVE" in history:
             if self.observe_defect_once and not self._observed_defect:
                 self._observed_defect = True
                 verdict, reason = "defect", "产物缺少关键内容 X（mock 首次核对故意判缺陷）"
@@ -260,7 +261,7 @@ class MockClient:
                 text = "[OBSERVATION] 通过：产物完整，格式正确。"
             if "submit_verdict" in tool_names:
                 tname, targs = "submit_verdict", {"verdict": verdict, "reason": reason}
-        elif "# 当前阶段：VERIFY" in system:
+        elif "# 当前阶段：VERIFY" in history:
             if self.verify_fail_once and not self._verify_failed:
                 self._verify_failed = True
                 verdict, reason = "fail", "产物缺少关键内容（mock 首次验收故意不通过）"

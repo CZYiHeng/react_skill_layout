@@ -172,6 +172,14 @@ def check_context_windowing() -> list[str]:
     _s2 = _c.build_step_messages(Action(name="think", skill_body="正文"), "指令")
     if _s1[0]["content"] != _s2[0]["content"]:
         failures.append("同阶段 system 前缀不稳定（上下文缓存将全部失效）")
+    # 方案 B 验收：跨阶段/跨轮次 system 必须完全相同（所有调用共享同一前缀）。
+    _s3 = _c.build_step_messages(Action(name="act", skill_body="另一正文"), "指令2")
+    if _s1[0]["content"] != _s3[0]["content"]:
+        failures.append("跨阶段 system 不相同（缓存前缀断裂）")
+    if "# 当前阶段：ACT" not in _s3[-1]["content"]:
+        failures.append("阶段标记不在尾部 user（应在消息尾部）")
+    if _s3[0]["content"].startswith("# 当前阶段"):
+        failures.append("system 不应包含阶段标记")
     return failures
 
 
