@@ -618,6 +618,18 @@ def check_native_tools() -> list[str]:
         if "已拒绝" not in ex.run_tool("shell", {"command": "echo hi"}):
             failures.append("shell 工具未按开关拒绝")
 
+    # 1b) 非法参数不抛异常（模型参数不可信，抛异常会导致工具回执缺失 → API 400）
+    with tempfile.TemporaryDirectory() as _td:
+        td = Path(_td)
+        (td / "a.py").write_text("line1\nline2\nline3\nline4\nline5", encoding="utf-8")
+        ex = LocalExecutor(cwd=td)
+        try:
+            out = ex.run_tool("read", {"path": "a.py", "offset": "abc", "limit": -3})
+            if "line1" not in out:
+                failures.append("非法 offset/limit 未回退默认（应正常读文件）")
+        except Exception as e:  # noqa: BLE001
+            failures.append(f"非法 offset/limit 抛异常: {e}")
+
     # 2) read 默认行数上限：3000 行只读前 2000 + 翻页提示（对齐 Claude）
     with tempfile.TemporaryDirectory() as _td:
         td = Path(_td)
@@ -659,4 +671,48 @@ def check_native_tools() -> list[str]:
         failures.append("工具循环最终产物应为 [RESULT] 内容")
     if not any("read" in str(t) for t in model.tools_seen):
         failures.append("ACT 阶段未注入 read 原生工具")
+
+    # 4) 工具执行抛异常时回执仍完备（否则下次 API 400）
+    class _ThrowingExecutor:
+        def run_tool(self, name, args):
+            raise RuntimeError("boom")
+
+        def run(self, kind, payload):
+            return "ok"
+
+    model2 = MockClient(emit_file_tools=True)
+    recorder2 = _RecordingExecutor()
+    ctx2 = SessionContext(max_rounds=5, max_context_messages=12)
+    loop2 = ReActLoop(registry, ctx2, model2, render, gate=None,
+                      ask=lambda q: "冒烟回答：输入已确认", executor=_ThrowingExecutor())
+    result2 = loop2.run("工具异常测试任务")
+    if result2.status != "done":
+        failures.append(f"工具异常时循环未正常完成: {result2.status}")
+    for m in ctx2.messages:
+        tcs = m.get("tool_calls")
+        if m.get("role") == "assistant" and tcs:
+            ids = {t.get("id") for t in tcs if t.get("id")}
+            follow = [x for x in ctx2.messages
+                      if x.get("role") == "tool"
+                      and x.get("tool_call_id") in ids]
+            if ids and len(follow) < len(ids):
+                failures.append("工具执行异常后 assistant(tool_calls) 回执缺失")
+
+    # 5) context 清理：缺回执的 assistant(tool_calls) 整对丢弃（防 API 400）
+    from react.context import SessionContext as SC
+    from react.action import ActionRegistry as AR2
+    bad = SC(max_rounds=5, max_context_messages=12)
+    bad.add_user("任务")
+    bad.add_assistant("", tool_calls=[{"id": "x1", "type": "function",
+                                       "function": {"name": "read",
+                                                    "arguments": '{"path":"a.py"}'}}])
+    # 故意不写 x1 的回执（模拟回执缺失）
+    bad.add_assistant("[RESULT] 后续产物")
+    registry2 = AR2()
+    registry2.load(Path(r"G:\react-agent\skills"))
+    act2 = registry2.get("act")
+    msgs = bad.build_step_messages(act2, "当前步骤指令")
+    body = "\n".join(m.get("content") or "" for m in msgs)
+    if any(m.get("tool_calls") for m in msgs):
+        failures.append("缺回执的 assistant(tool_calls) 未被清理（仍会 400）")
     return failures

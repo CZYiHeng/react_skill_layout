@@ -152,14 +152,33 @@ class SessionContext:
         else:
             windowed = list(history)
 
-        # 兜底：丢弃没有宿主的 tool 消息。孤儿 role=tool 会让 API 直接 400
-        # （"must be a response to a preceding message with 'tool_calls'"）。
+        # 兜底：清理不成对的工具消息对，防止 API 400。
+        # - 孤儿 role=tool（无宿主 assistant）→ 丢弃；
+        # - assistant(tool_calls) 的每个 id 缺少紧随的 tool 回执 → 整对丢弃
+        #   （"insufficient tool messages following tool_calls message"）。
         # 宁可少一条上下文，也不能让整次调用失败。
         cleaned: list[dict] = []
-        for m in windowed:
-            if m.get("role") == "tool" and not (cleaned and cleaned[-1].get("tool_calls")):
+        i = 0
+        while i < len(windowed):
+            m = windowed[i]
+            tcs = m.get("tool_calls")
+            if m.get("role") == "assistant" and tcs:
+                needed = {t.get("id") for t in tcs if t.get("id")}
+                j = i + 1
+                got: set[str] = set()
+                while j < len(windowed) and windowed[j].get("role") == "tool":
+                    got.add(windowed[j].get("tool_call_id"))
+                    j += 1
+                if needed and got >= needed:
+                    cleaned.append(m)
+                    cleaned.extend(windowed[i + 1:j])
+                i = j
                 continue
+            if m.get("role") == "tool":
+                i += 1
+                continue  # 孤儿 tool：丢弃
             cleaned.append(m)
+            i += 1
         windowed = cleaned
 
         env_block = f"# 运行环境\n{self.env_info}\n\n" if self.env_info else ""

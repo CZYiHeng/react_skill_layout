@@ -65,21 +65,28 @@ class LocalExecutor:
     # ------------------------------------------------------------------
 
     def run_tool(self, name: str, args: dict) -> str:
-        """按工具名 + 参数 dict 执行（模型原生工具调用）。"""
+        """按工具名 + 参数 dict 执行（模型原生工具调用）。
+
+        任何异常都转为错误回执字符串，绝不抛出——否则 _step 工具循环中断、
+        assistant(tool_calls) 缺回执，下次 API 调用直接 400。
+        """
         args = args or {}
-        if name == "shell":
-            return self._shell(str(args.get("command", "")).strip())
-        if name == "read":
-            return self._read(args)
-        if name == "write":
-            return self._write(args)
-        if name == "edit":
-            return self._edit(args)
-        if name == "grep":
-            return self._grep(args)
-        if name == "glob":
-            return self._glob(args)
-        return f"（未知工具：{name}）"
+        try:
+            if name == "shell":
+                return self._shell(str(args.get("command", "")).strip())
+            if name == "read":
+                return self._read(args)
+            if name == "write":
+                return self._write(args)
+            if name == "edit":
+                return self._edit(args)
+            if name == "grep":
+                return self._grep(args)
+            if name == "glob":
+                return self._glob(args)
+            return f"（未知工具：{name}）"
+        except Exception as e:  # noqa: BLE001
+            return f"（工具 {name} 执行异常：{e}）"
 
     # ------------------------------------------------------------------
     # 文本协议入口（兜底，kimi 等模型工具调用缺失时可用）
@@ -186,11 +193,11 @@ class LocalExecutor:
 
         total = len(lines)
         offset_raw = args.get("offset")
-        offset = (max(1, int(offset_raw)) - 1) if offset_raw not in (None, "") else 0
-        limit_raw = args.get("limit")
-        limit = int(limit_raw) if limit_raw not in (None, "") else _READ_DEFAULT_LINES
-        if limit <= 0:
-            limit = _READ_DEFAULT_LINES
+        offset = _safe_int(offset_raw, 0) - 1
+        if offset < 0:
+            offset = 0
+        limit = _safe_int(args.get("limit"), _READ_DEFAULT_LINES, lo=1)
+        limit = min(limit, _READ_DEFAULT_LINES)
         # 对齐 Claude：即使显式 limit 也压到单次上限，超长提示翻页
         limit = min(limit, _READ_DEFAULT_LINES)
         segment = lines[offset:offset + limit]
@@ -394,6 +401,17 @@ def _parse_write_payload(payload: str):
         content = '\n'.join(plines[begin_idx + 1:end_idx])
         return path, content
     return None
+
+
+def _safe_int(raw, default: int, lo: int | None = None) -> int:
+    """安全转 int：非法/超界回退默认，绝不抛异常（模型参数不可信）。"""
+    try:
+        v = int(raw)
+    except (TypeError, ValueError):
+        return default
+    if lo is not None and v < lo:
+        return default
+    return v
 
 
 def _detect_bash() -> str:

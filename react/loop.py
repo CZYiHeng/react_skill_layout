@@ -764,13 +764,18 @@ class ReActLoop:
             self.context.add_assistant(text=content, tool_calls=resp.tool_calls)
             if tool_handler is not None:
                 # 原生工具循环：逐个执行真实工具，结果以 role=tool 回写（对标 Claude）
+                # 单个工具执行异常也必须写回执（错误文本），保证 assistant(tool_calls)
+                # 的每个 id 都有 tool 回执，否则下次 API 调用报 400。
                 for tc in resp.tool_calls:
                     name = tc["function"]["name"]
                     try:
                         args = json.loads(tc["function"]["arguments"] or "{}")
                     except json.JSONDecodeError:
                         args = {}
-                    result = tool_handler(name, args)
+                    try:
+                        result = tool_handler(name, args)
+                    except Exception as e:  # noqa: BLE001
+                        result = f"（工具 {name} 执行异常：{e}）"
                     self.context.add_tool(tc["id"], result)
                     self.render.info(f"↳ 工具 {name} → {result[:300]}")
                 self._tool_loop_pending = True
