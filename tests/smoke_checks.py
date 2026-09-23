@@ -46,7 +46,7 @@ def check_loop_structure(calls: list[str] | None, result, context, recorder,
         failures.append("缺陷反馈未注入历史")
     if context.plan_index != 1:
         failures.append(f"计划指针推进异常: {context.plan_index}")
-    # 原生工具调用通道：THINK 注入 decide_next_step，OBSERVE/VERIFY 注入 submit_verdict
+    # 原生工具调用通道：全阶段统一注入全量工具（含 decide_next_step / submit_verdict）
     seen = getattr(model, "tools_seen", [])
     if not any("decide_next_step" in t for t in seen):
         failures.append("THINK 未注入 decide_next_step 工具")
@@ -687,7 +687,7 @@ def check_native_tools() -> list[str]:
     if result.final_text and "冒烟测试产物" not in result.final_text:
         failures.append("工具循环最终产物应为 [RESULT] 内容")
     if not any("read" in str(t) for t in model.tools_seen):
-        failures.append("ACT 阶段未注入 read 原生工具")
+        failures.append("未注入 read 原生工具（全阶段全量）")
 
     # 4) 工具执行抛异常时回执仍完备（否则下次 API 400）
     class _ThrowingExecutor:

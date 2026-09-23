@@ -343,6 +343,11 @@ FILE_TOOLS: list[dict] = [
     ]
 ]
 
+# 全阶段统一工具集（缓存友好：tools schema 冻结，任意阶段/轮次逐 token 一致）。
+# 对标 Claude Code：所有工具全程可用，模型靠阶段指令决定调哪个；
+# 控制阶段（THINK/OBSERVE/VERIFY）仍须调用对应的 decide/verdict 工具。
+ALL_TOOLS: list[dict] = [DECIDE_TOOL, VERDICT_TOOL, *FILE_TOOLS]
+
 # 工具循环防死循环上限（对标 Claude 的自动工具使用，但加护栏）
 _TOOL_LOOP_MAX = 12
 
@@ -439,11 +444,11 @@ class ReActLoop:
                 think_prompt += "（注意：上一阶段已连续多次未通过，你必须选择 PLAN 重新规划。）"
                 self.force_plan = False
             think_out = self._step("think", think_prompt, run_gate=False,
-                                   tools=[DECIDE_TOOL])
+                                   tools=ALL_TOOLS)
             if self._aborted:
                 return LoopResult("aborted", self.context.round_no, "人工中止")
             decision = self._resolve("think", think_out, self._decision_extract,
-                                     tools=[DECIDE_TOOL])
+                                     tools=ALL_TOOLS)
 
             if decision == "ASK":
                 self._ask_count += 1
@@ -475,7 +480,7 @@ class ReActLoop:
                 if self._aborted:
                     return LoopResult("aborted", self.context.round_no, "人工中止")
                 verdict = self._resolve("verify", vout, self._verdict_extract,
-                                        tools=[VERDICT_TOOL])
+                                        tools=ALL_TOOLS)
                 # 终检验收必拦：人工可在此纠偏，纠偏后不许直接 done
                 if self._apply_gate_if_needed("verify", verdict, reason="最终验收"):
                     verdict = "不通过"
@@ -521,7 +526,7 @@ class ReActLoop:
         for _ in range(_TOOL_LOOP_MAX):
             self._tool_loop_pending = False
             last = self._step("act", act_prompt, run_gate=False,
-                              tools=FILE_TOOLS, tool_handler=handler)
+                              tools=ALL_TOOLS, tool_handler=handler)
             if self._aborted:
                 return last
             if not self._tool_loop_pending:
@@ -607,11 +612,11 @@ class ReActLoop:
             "★ 若两者数量不一致，说明产物未被完整执行，必须判定为 fail。\n"
             f"【待核对产物】\n{result_text}{exec_note}"
         )
-        obs_out = self._step("observe", obs_prompt, tools=[VERDICT_TOOL])
+        obs_out = self._step("observe", obs_prompt, tools=ALL_TOOLS)
         if self._aborted:
             return
         verdict = self._resolve("observe", obs_out, self._verdict_extract,
-                                tools=[VERDICT_TOOL])
+                                tools=ALL_TOOLS)
 
         if verdict == "通过":
             self._misses = 0
@@ -641,7 +646,7 @@ class ReActLoop:
 
     def _step_verify(self) -> StepOutput:
         return self._step("verify", "请对照任务最初目标做最终验收，给出结论。",
-                          tools=[VERDICT_TOOL])
+                          tools=ALL_TOOLS)
 
     # ------------------------------------------------------------------
     # 人工交互
@@ -749,6 +754,9 @@ class ReActLoop:
         on_token = self.render.on_token(action_name)
         # 计划阶段用推理模型（慢但深），其余阶段用执行模型（快而稳）；plan_model 未配置则回落
         client = self.plan_model if (action_name == "plan" and self.plan_model) else self.model
+        # tools schema 全阶段冻结（缓存友好）：未显式指定时统一注入全量工具
+        if tools is None:
+            tools = ALL_TOOLS
         resp = client.complete(messages, tools=tools, on_token=on_token)
         parsed = parse_tag(resp.text, action_name.upper())
         # 控制阶段常无正文（决策/判定在工具参数里）：用工具渲染兜底，保展示与历史可见
