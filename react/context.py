@@ -128,10 +128,11 @@ class SessionContext:
     def build_step_messages(self, action: Action, step_prompt: str) -> list[dict]:
         """组装某一步的完整消息列表。
 
-        system = 全局协议 + 该动作槽位的 skill 正文 +（可选）历史摘要 + 当前步骤指令。
+        system = 全局协议 + 该动作槽位的 skill 正文 + 当前步骤指令。
         历史做**窗口化**：始终保留首条任务锚点 + 最近 max_context_messages 条原文，
-        更早的消息折算成一行摘要并入 system。只影响"发给模型的"，不动 self.messages
-        （/save 依旧导出全量账本）。
+        更早的消息折算成一行摘要放在**消息尾部**（排在 step_prompt 之后），
+        保证同阶段内 system + 历史前缀稳定，吃满 DeepSeek/kimi 的自动上下文缓存。
+        只影响"发给模型的"，不动 self.messages（/save 依旧导出全量账本）。
         """
         history = self.messages
         digest = ""
@@ -146,7 +147,7 @@ class SessionContext:
                 lines = [_summarize(m) for m in shown]
                 if omitted > 0:
                     lines.insert(0, f"- （更早 {omitted} 条已省略）")
-                digest = ("# 历史摘要（较早消息已压缩，仅供定位；最新轨迹在下方消息中）\n"
+                digest = ("# 历史摘要（较早消息已压缩，仅供定位；完整轨迹见上方消息）\n"
                           + "\n".join(lines))
             windowed = [*head, *tail]
         else:
@@ -187,11 +188,17 @@ class SessionContext:
             f"{env_block}"
             f"# 当前阶段：{action.name.upper()}\n\n"
             f"{action.skill_body}\n\n"
-            f"{digest + chr(10) + chr(10) if digest else ''}"
             f"# 当前步骤指令\n{step_prompt}"
         )
+        # digest 必须放在消息**尾部**、且排在 step_prompt 之后：
+        # 放在 system 中间会让每次调用的前缀随历史增长而改变，
+        # DeepSeek/kimi 的自动上下文缓存（前缀命中）全部失效。
+        # 排在尾部只影响最后一条消息，同阶段内 system + 历史前缀保持稳定。
+        tail_user = step_prompt
+        if digest:
+            tail_user = f"{step_prompt}\n\n{digest}"
         return [{"role": "system", "content": system}, *windowed,
-                {"role": "user", "content": step_prompt}]
+                {"role": "user", "content": tail_user}]
 
     def export_markdown(self) -> str:
         """导出会话全文为 Markdown（/save 使用）。"""

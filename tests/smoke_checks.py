@@ -157,12 +157,21 @@ def check_context_windowing() -> list[str]:
         _c.add_user(f"u{i}")
         _c.add_assistant(f"a{i}")
     _msgs = _c.build_step_messages(Action(name="think", skill_body="正文"), "指令")
-    if "历史摘要" not in _msgs[0]["content"]:
-        failures.append("上下文窗口化未生成历史摘要")
+    if "历史摘要" not in _msgs[-1]["content"]:
+        failures.append("历史摘要未生成/未放在消息尾部（应并入最后一条 user）")
+    if "历史摘要" in _msgs[0]["content"]:
+        failures.append("历史摘要不应在 system 中（放在中间破坏缓存前缀）")
     if len(_msgs) > 1 + 1 + 4 + 1:  # system + 任务锚点 + 最近 4 条 + 当前指令
         failures.append(f"上下文窗口化未限制发送条数: {len(_msgs)}")
     if len(_c.messages) != 40:
         failures.append("窗口化不应改动全量账本")
+    # P0 验收：同阶段内连续调用（如 ACT 工具循环）system 前缀必须稳定，
+    # 才能吃满 DeepSeek/kimi 的自动上下文缓存（前缀命中）。
+    _s1 = _c.build_step_messages(Action(name="think", skill_body="正文"), "指令")
+    _c.add_assistant("新增一条历史")
+    _s2 = _c.build_step_messages(Action(name="think", skill_body="正文"), "指令")
+    if _s1[0]["content"] != _s2[0]["content"]:
+        failures.append("同阶段 system 前缀不稳定（上下文缓存将全部失效）")
     return failures
 
 
