@@ -193,7 +193,9 @@ uv run python tools/cache_probe.py    # 离线缓存探针：改造前/后逐字
 
 - **每个任务都是全新会话（不是连续对话）**。`ReActLoop.run()` 第一行就 `context.reset()`，
   所以 Web 里输入「再改一下」= 全新任务、零上下文，尽管它紧跟在上一轮结果下面。
-  需要承接上文时，把必要背景写进本次任务描述，或用 `/save` 导出后另起一轮。
+  需要接续上文时：Web 端在请求里带 `continue_session: true`，CLI 用 `/continue` 开关
+  （提示符会变成 `react(接续)>`）——开启后下个任务会带上**上一个任务的结论摘要**
+  （≤约 400 token，不重放账本）。
 - **SSE 断线期间的事件不补发**。后端事件队列取走即移除，前端重连后不补放断线期间的
   事件（[web/src/api.js](web/src/api.js) 有说明）。若断线时恰好错过 `done`，界面会停在
   `running`——刷新页面即可（会走 `/api/state` 重建）。
@@ -202,6 +204,12 @@ uv run python tools/cache_probe.py    # 离线缓存探针：改造前/后逐字
   `REACT_AGENT_GATE_MODE` 环境变量）。注意 `auto` 档下 Web 端闸门弹出后仍有 30s 倒计时自动放行。
 - **`[EXEC:]` 默认不执行**：`enable_shell_exec` / `enable_file_write` 默认关闭，
   开启后 agent 才能真正跑命令、写文件（写盘范围受 `work_dir` 约束）。
+- **压缩看 token 预算，不看条数**：`max_context_tokens`（默认 100000）是压缩阈值。
+  每次调用后用 provider 的实测 usage 校准"下一次请求大概多少 token"，超阈值才压缩一次；
+  `max_context_messages`（默认 400）只是防长尾的硬上限。
+  **判据：如果 `/api/token_stats` 里 `cache_hit_rate` 长期低于 40%，说明预算仍偏小**
+  （压缩太频繁会把 provider 的前缀缓存反复打断）——上调 `max_context_tokens`，
+  窗口小于 128k 的模型则按「窗口 × 0.6」下调。
 - **Windows 沙箱不阻断网络**，且子进程仍以当前用户身份运行（详见
   [docs/DESIGN.md](docs/DESIGN.md) 安全模型一节）。
 

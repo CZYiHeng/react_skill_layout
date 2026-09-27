@@ -237,6 +237,7 @@ _REPAIR_HINTS = {
 _REPAIR_MAX = 2  # 每个歧义步最多自我修正次数
 _MAX_ASK_TURNS = 6  # ASK 轮次独立上限，防止模型反复提问死循环（缺口 g）
 _MISS_LIMIT = 3  # OBSERVE 连续非通过达此数 → 强制下一轮 THINK 重出 PLAN（防原地打转）
+_MEMORY_MAX_CHARS = 600  # 会话记忆里「上一任务结论」的字数上限（约 400 token，防膨胀）
 
 
 # ---- 原生工具调用：控制信号结构化（免正则，抗格式漂移） ----
@@ -426,8 +427,46 @@ class ReActLoop:
 
     # ------------------------------------------------------------------
 
-    def run(self, user_input: str) -> LoopResult:
+    def run(self, user_input: str, *, continue_session: bool = False) -> LoopResult:
+        """跑一个任务。
+
+        `continue_session=True` 时，把**上一个任务的结论摘要**作为一条会话记忆注入，
+        让"再改一下""接着刚才的"这类追问不至于完全失忆。注入的是摘要（≤约 400 token），
+        **不重放上一个任务的账本**——否则上下文会成倍膨胀。
+        默认 `False`：新任务是全新会话，行为与从前逐字节一致。
+        """
+        result = self._run_loop(user_input, continue_session=continue_session)
+        self._record_session_memory(result)
+        return result
+
+    def _memory_text(self) -> str:
+        """会话记忆文本：上个任务的结论摘要。没有记忆时返回空串。"""
+        prev = self.context.session_memory.get("summary")
+        if not prev:
+            return ""
+        status = self.context.session_memory.get("last_status", "")
+        return (f"[会话记忆] 上一个任务（{status}）的结论：{prev}\n"
+                "（以上仅为摘要，非当前任务的要求；与当前任务无关时请忽略。）")
+
+    def _record_session_memory(self, result: LoopResult) -> None:
+        """任务收尾：把结论压成一条摘要存进会话记忆，供下一个任务（选择接续时）使用。"""
+        text = " ".join((result.final_text or "").split())
+        if len(text) > _MEMORY_MAX_CHARS:
+            text = text[:_MEMORY_MAX_CHARS] + "…"
+        self.context.session_memory = {
+            "summary": text,
+            "last_status": result.status,
+            "turns": int(self.context.session_memory.get("turns", 0)) + 1,
+        }
+
+    def _run_loop(self, user_input: str, *, continue_session: bool = False) -> LoopResult:
         self.context.reset()
+        if continue_session:
+            memory = self._memory_text()
+            if memory:
+                self.context.add_user(memory)
+            else:
+                self.render.info("没有可接续的会话记忆，按新任务处理")
         self.context.add_user(user_input)
         self._misses = 0
         self._aborted = False
@@ -774,7 +813,11 @@ class ReActLoop:
         # tools schema 全阶段冻结（缓存友好）：未显式指定时统一注入全量工具
         if tools is None:
             tools = ALL_TOOLS
+        # 压力计量：发出前记录本次发出的形状，返回后用实测 usage 校准。
+        # 压缩触发看的是这个压力值（见 context._should_compress），不再是消息条数。
+        self.context.note_call(messages)
         resp = client.complete(messages, tools=tools, on_token=on_token)
+        self.context.observe_usage(resp.usage)
         parsed = parse_tag(resp.text, action_name.upper())
         # 控制阶段常无正文（决策/判定在工具参数里）：用工具渲染兜底，保展示与历史可见
         if not parsed.strip() and resp.tool_name:

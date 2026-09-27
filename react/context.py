@@ -114,6 +114,8 @@ class SessionContext:
     _factor: float = field(default=1.0, init=False)
     #: 上一次调用**发出**的消息列表（估算 prompt 用，与实测同源，便于精确校准）
     _last_sent: list[dict] = field(default_factory=list, init=False)
+    #: 跨任务会话记忆（summary / last_status）。**不进 messages**，避免 token 爆炸。
+    session_memory: dict = field(default_factory=dict)
 
     # ---- 历史维护 ----
 

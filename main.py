@@ -31,6 +31,7 @@ HELP_TEXT = """指令：
   /help          显示本帮助与当前绑定状态
   /binds         列出 5 个动作槽位的绑定状态
   /reset         清空会话上下文
+  /continue      切换任务间记忆（开=下个任务带上上一任务的结论摘要）
   /save [文件]   导出会话全文为 Markdown（缺省自动时间戳命名）
   /quit          退出
 
@@ -151,11 +152,16 @@ def cmd_repl(skills_dir: Path, console: Console) -> None:
                   f" · 文件写入={'开' if cfg['enable_file_write'] else '关'}"
                   f" · 沙箱={'OS级' if cfg['enable_shell_exec'] and cfg['sandbox_shell'] else '关'}"
                   + (f"(低完整性)" if cfg.get('sandbox_integrity_low') else "")
-                  + f" · 上下文窗口={cfg['max_context_messages']} 条[/dim]")
+                  + f" · 上下文预算={cfg['max_context_tokens']} token"
+                  f"（硬上限 {cfg['max_context_messages']} 条）[/dim]")
+
+    # 任务间记忆开关：默认关（新任务 = 全新会话）。追问/接续前用 /continue 打开。
+    continue_session = False
 
     while True:
         try:
-            user_in = input("\nreact> ").strip()
+            prompt = "\nreact> " if not continue_session else "\nreact(接续)> "
+            user_in = input(prompt).strip()
         except (EOFError, KeyboardInterrupt):
             console.print("\n[dim]再见[/dim]")
             return
@@ -166,6 +172,11 @@ def cmd_repl(skills_dir: Path, console: Console) -> None:
             cmd, arg = parts[0], (parts[1] if len(parts) > 1 else "")
             if cmd == "/quit":
                 return
+            if cmd == "/continue":
+                continue_session = not continue_session
+                render.info("任务间记忆：" + ("开（下个任务会带上上一任务的结论摘要）"
+                                          if continue_session else "关（每个任务全新会话）"))
+                continue
             if cmd == "/help":
                 console.print(HELP_TEXT)
                 for name, desc in registry.bind_status():
@@ -191,7 +202,7 @@ def cmd_repl(skills_dir: Path, console: Console) -> None:
         # 任务输入 → ReAct 循环（gate/ask 已由 CliControl 接线）
         loop = runtime.loop
         try:
-            result = loop.run(user_in)
+            result = loop.run(user_in, continue_session=continue_session)
         except KeyboardInterrupt:
             render.warn("已中断当前循环")
             continue

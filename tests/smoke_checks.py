@@ -9,7 +9,7 @@ import os
 import sys
 from pathlib import Path
 
-from react.action import Action
+from react.action import Action, ActionRegistry
 from react.context import SessionContext
 from react.display import classify
 from react.executor import LocalExecutor
@@ -150,9 +150,14 @@ def check_executor_defaults(base_dir: Path) -> list[str]:
 
 
 def check_context_windowing() -> list[str]:
-    """问题③：上下文窗口化——压缩旧消息、限制发送条数、不动全量账本。"""
+    """问题③：上下文窗口化——压缩旧消息、限制窗口、不动全量账本。
+
+    触发口径现已改为 **token 压力**（`max_context_tokens`）为主、条数（`max_context_messages`）
+    为硬上限兜底；本断言用后者构造可复现的压缩，并验证窗口不再无限增长。
+    """
     failures: list[str] = []
-    _c = SessionContext(max_context_messages=4)
+    # 关掉 token 触发，只看条数硬上限这条路径（token 路径由 check_token_budget 覆盖）
+    _c = SessionContext(max_context_messages=4, max_context_tokens=0)
     for i in range(20):
         _c.add_user(f"u{i}")
         _c.add_assistant(f"a{i}")
@@ -216,7 +221,7 @@ def check_cache_prefix() -> list[str]:
         wins = [*msgs[:1], *msgs[ctx._digest_upto:]]
         return ctx._digest_upto, wins, msgs
 
-    ctx = SessionContext(max_context_messages=4)
+    ctx = SessionContext(max_context_messages=4, max_context_tokens=0)
     for i in range(30):
         ctx.add_user(f"u{i}")
         ctx.add_assistant(f"a{i}")
@@ -289,6 +294,160 @@ def check_cache_prefix() -> list[str]:
         failures.append("历史摘要不在尾部 user 内")
     if not (0 < ctx._digest_upto < len(ctx.messages)):
         failures.append(f"摘要边界越界: _digest_upto={ctx._digest_upto}")
+    return failures
+
+
+def check_token_budget() -> list[str]:
+    """**核心断言**：压缩由 token 压力触发，而不是消息条数。
+
+    旧实现只数条数，所以"1 条 50k 字符的 tool 回执"被当成 1 条、轻松绕过预算；
+    这正是长任务撞上下文上限、且缓存被频繁压缩打崩的根因。
+    """
+    failures: list[str] = []
+    act = Action(name="act", skill_body="正文")
+
+    # 1) 条数远未达上限，但 token 压力超标 → 必须压缩
+    # 预算要大于 system+skill+tools 的开销（否则任何组装都"超预算"，测不出东西）
+    ctx = SessionContext(max_context_messages=400, max_context_tokens=6000)
+    for i in range(30):                     # 60 条，离 400 条差得远
+        ctx.add_user("x" * 400)             # 每条约 200 token
+        ctx.add_assistant("y" * 400)
+    before = len(ctx.messages)
+    ctx.build_step_messages(act, "执行")
+    if ctx._digest_upto == 0:
+        failures.append("token 压力达标却未压缩（仍在按条数判断？）")
+    if not ctx._digest_text:
+        failures.append("token 触发的压缩未生成摘要")
+    if len(ctx.messages) != before:
+        failures.append("压缩不应改动全量账本")
+
+    # 2) 反过来：条数超硬上限必须压缩（护栏路径）
+    ctx2 = SessionContext(max_context_messages=16, max_context_tokens=0)
+    for i in range(40):
+        ctx2.add_user(f"u{i}")
+        ctx2.add_assistant(f"a{i}")
+    ctx2.build_step_messages(act, "执行")
+    if ctx2._digest_upto == 0:
+        failures.append("条数超硬上限却未压缩（硬上限失效）")
+
+    # 3) 两者都没超 → 一条都不许动（保证不无谓压缩、不打断前缀缓存）
+    ctx3 = SessionContext(max_context_messages=400, max_context_tokens=10_000_000)
+    for i in range(5):
+        ctx3.add_user(f"u{i}")
+        ctx3.add_assistant(f"a{i}")
+    msgs3 = ctx3.build_step_messages(act, "执行")
+    if ctx3._digest_upto != 0 or ctx3._digest_text:
+        failures.append("预算充足时不应发生任何压缩")
+    if len(msgs3) != 1 + 10 + 1:            # system + 10 条原文 + 尾部指令
+        failures.append(f"预算充足时窗口应完整：{len(msgs3)}")
+
+    # 4) 回滚开关：max_context_tokens=0 时退回纯条数口径
+    ctx4 = SessionContext(max_context_messages=4, max_context_tokens=0)
+    for i in range(20):
+        ctx4.add_user(f"u{i}")
+        ctx4.add_assistant(f"a{i}")
+    ctx4.build_step_messages(act, "执行")
+    if ctx4._digest_upto == 0:
+        failures.append("max_context_tokens=0 时未退回条数口径（回滚开关失效）")
+    return failures
+
+
+def check_pressure_estimate() -> list[str]:
+    """压力计量：实测优先、新增部分靠估算、并用实测在线校准。"""
+    failures: list[str] = []
+    ctx = SessionContext()
+    # 先给账本一点内容，再做全量估算（空账本估出 0 是正确行为，不是 bug）
+    ctx.add_user("u" * 400)
+    est = ctx.pressure_tokens()
+    if est <= 0:
+        failures.append(f"无实测值时压力估算应 > 0，实际 {est}")
+
+    # 模拟一次真实调用：实测/估算 ≈ 4（真实端点的量级）→ 系数被抬高
+    sent = [{"role": "system", "content": "s" * 100},
+            {"role": "user", "content": "u" * 300}]     # 400 字符 ≈ 估算 200 token
+    ctx.messages = list(sent)
+    ctx.note_call(sent)
+    ctx.observe_usage({"prompt": 800, "completion": 10, "total": 810})
+    if ctx._last_prompt_tokens != 800:
+        failures.append("实测 prompt 未被记录")
+    if ctx._factor <= 1.0:
+        failures.append(f"校准系数未被抬高（factor={ctx._factor}，真实比例 4）")
+    if ctx._factor > 12.0:
+        failures.append(f"校准系数越过上界（factor={ctx._factor}）")
+    # 实测 + 新增：压力必须随新增消息单调增长
+    p1 = ctx.pressure_tokens()
+    ctx.add_user("z" * 4000)
+    p2 = ctx.pressure_tokens()
+    if p2 <= p1:
+        failures.append(f"新增消息后压力未增长：{p1} → {p2}")
+    if p1 < 800:
+        failures.append(f"压力应至少包含实测历史 800，实际 {p1}")
+
+    # usage 缺失时不得改变任何状态（退化路径）
+    keep = (ctx._last_prompt_tokens, ctx._factor)
+    ctx.observe_usage(None)
+    ctx.observe_usage({})
+    if (ctx._last_prompt_tokens, ctx._factor) != keep:
+        failures.append("usage 缺失时不应改动计量状态")
+
+    # reset 清掉实测值，但保留校准系数（它刻画模型分词比例，跨任务有效）
+    f = ctx._factor
+    ctx.reset()
+    if ctx._last_prompt_tokens is not None:
+        failures.append("reset 后应清空实测 prompt（否则新任务会误判已超预算）")
+    if ctx._factor != f:
+        failures.append("reset 不应重置校准系数")
+    return failures
+
+
+def check_session_memory(base_dir: Path) -> list[str]:
+    """任务间记忆：默认关闭且逐字节同旧；开启时注入一条摘要且不重放账本。"""
+    from react.model import MockClient
+    from react.render import RichRenderer
+
+    failures: list[str] = []
+    registry = ActionRegistry()
+    registry.load(base_dir / "skills")
+    render = RichRenderer(None, show_reasoning=False)
+
+    def _loop(ctx):
+        return ReActLoop(registry, ctx, MockClient(), render, gate=None,
+                         ask=lambda q: "冒烟回答：输入已确认")
+
+    # 1) 默认关闭：第二个任务的账本不得含上一个任务的任何痕迹
+    ctx = SessionContext(max_rounds=5, max_context_messages=100)
+    loop = _loop(ctx)
+    loop.run("第一个任务：甲")
+    first_msgs = list(ctx.messages)
+    loop.run("第二个任务：乙")
+    joined = "\n".join(m.get("content") or "" for m in ctx.messages)
+    if "会话记忆" in joined:
+        failures.append("默认（continue_session=False）不应注入会话记忆")
+    if len(ctx.messages) == 0 or ctx.messages[0]["content"] != "第二个任务：乙":
+        failures.append("默认路径首条应为本次任务本身（与旧行为一致）")
+    if not first_msgs:
+        failures.append("前置任务未产生账本，断言无效")
+
+    # 2) 记忆已被记录
+    if not ctx.session_memory.get("summary"):
+        failures.append("任务结束后未记录会话记忆摘要")
+
+    # 3) 开启接续：注入一条会话记忆，且**不重放**上个任务的账本
+    ctx2 = SessionContext(max_rounds=5, max_context_messages=100)
+    loop2 = _loop(ctx2)
+    loop2.run("第一个任务：甲", continue_session=False)
+    prev_len = len(ctx2.messages)
+    loop2.run("第二个任务：乙", continue_session=True)
+    head = "\n".join((m.get("content") or "") for m in ctx2.messages[:2])
+    if "会话记忆" not in head:
+        failures.append("continue_session=True 时未注入会话记忆")
+    if len(ctx2.messages) >= prev_len * 2:
+        failures.append("会话记忆疑似重放了整个账本（应只注入摘要）")
+    for m in ctx2.messages:
+        c = m.get("content") or ""
+        if "会话记忆" in c and len(c) > 1500:
+            failures.append(f"会话记忆摘要过长（{len(c)} 字符），可能撑大上下文")
+            break
     return failures
 
 
