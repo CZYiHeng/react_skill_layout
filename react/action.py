@@ -264,3 +264,14 @@ class ActionRegistry:
     def variants_of(self, slot: str) -> list[str]:
         """某槽位可选的变体名（含 default），供前端/CLI 展示。"""
         return sorted(self.get(slot).variants)
+
+    def reload(self, skills_root: Path) -> None:
+        """就地重读磁盘（清空后重新 load），让改了 SKILL.md 的会话不必重启。
+
+        Web 端每个任务都会重建 registry（`webapi._run_task`），所以天然免重启；
+        CLI 的 REPL 只在启动时建一次，需要显式重载。
+        注：本方法只重扫内容，**不重扫能力根目录**——新增/删除整个能力目录请重启。
+        """
+        self.actions.clear()
+        self.warnings.clear()
+        self.load(skills_root)

@@ -820,6 +820,73 @@ def check_capability_model(base_dir: Path) -> list[str]:
             json.dumps({"name": "coding"}), encoding="utf-8")
         if probe(root).name != "coding":
             failures.append("manifest 的 name 应优先于目录名")
+
+    # 10) 脚手架：一条命令造出新能力，且不污染 default 能力
+    with tempfile.TemporaryDirectory() as td:
+        sandbox = Path(td)
+        stages(sandbox / "skills")               # 假装这是仓库的 default 能力
+        before = {p: p.read_bytes() for p in (sandbox / "skills").rglob("*") if p.is_file()}
+        from rich.console import Console as _Console
+
+        import main as _main
+        _main.cmd_new_capability("qa-review", _Console(), sandbox)
+        dest = sandbox / "capabilities" / "qa-review"
+        if not dest.is_dir():
+            failures.append("脚手架未在 capabilities/<名>/ 生成能力")
+        else:
+            for slot in ACTION_NAMES:
+                md = dest / slot / "SKILL.md"
+                if not md.is_file():
+                    failures.append(f"脚手架缺少 {slot}/SKILL.md")
+                    continue
+                head = md.read_text(encoding="utf-8").splitlines()
+                if f"name: {slot}" not in head:
+                    failures.append(f"脚手架 {slot} 的 frontmatter name 未改成槽位名")
+                if not any("【待写】" in line for line in head):
+                    failures.append(f"脚手架 {slot} 未标注待写处（会看不出还没写）")
+            man = dest / "capability.json"
+            if not man.is_file() or json.loads(man.read_text(encoding="utf-8"))["name"] != "qa-review":
+                failures.append("脚手架未生成正确的 capability.json")
+            # 生成的能力必须能被发现并解析
+            if resolve_capability(dict(DEFAULTS), sandbox, "qa-review").root != dest:
+                failures.append("脚手架生成的能力无法按名解析")
+        # 不污染 default 能力（模板是拷出去的，不是就地改）
+        after = {p: p.read_bytes() for p in (sandbox / "skills").rglob("*") if p.is_file()}
+        if before != after:
+            failures.append("脚手架改动了 default 能力（模板必须只读）")
+        # 重名必须拒绝，不能覆盖已写内容
+        try:
+            _main.cmd_new_capability("qa-review", _Console(), sandbox)
+            failures.append("同名能力未拒绝（会覆盖已写内容）")
+        except SystemExit:
+            pass
+        # 非法能力名必须拒绝（不能逃出 capabilities/）
+        for bad in ("../evil", "a/b", ""):
+            try:
+                _main.cmd_new_capability(bad, _Console(), sandbox)
+                failures.append(f"非法能力名 {bad!r} 未被拒绝")
+            except SystemExit:
+                pass
+
+    # 11) reload：改了 SKILL.md 后重载生效（CLI 只在启动建一次 registry，需要它）
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        for slot in ACTION_NAMES:
+            (root / slot).mkdir(parents=True, exist_ok=True)
+            (root / slot / "SKILL.md").write_text(
+                f"---\nname: {slot}\n---\n\nV1-{slot}\n", encoding="utf-8")
+        reg = ActionRegistry()
+        reg.load(root)
+        (root / "act" / "SKILL.md").write_text(
+            "---\nname: act\n---\n\nV2-act\n", encoding="utf-8")
+        if "V1-act" not in reg.get("act").skill_body:
+            failures.append("未 reload 前应仍是旧内容（前提不成立）")
+        reg.reload(root)
+        body = reg.get("act").skill_body
+        if "V2-act" not in body or "V1-act" in body:
+            failures.append("reload 后未读到新内容")
+        if reg.warnings:
+            failures.append(f"reload 后 warnings 未重置：{reg.warnings}")
     return failures
 
 

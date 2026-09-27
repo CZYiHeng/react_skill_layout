@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import os
 import sys
 from pathlib import Path
@@ -18,6 +19,7 @@ for _stream in (sys.stdout, sys.stderr, sys.stdin):
 from rich.console import Console
 
 from react.action import ACTION_NAMES, DEFAULT_VARIANT, ActionRegistry
+from react.capability import CAPABILITIES_DIR
 from react.config import (ConfigError, active_provider_name, load_config as load_config_module,
                           resolve_config_path, resolve_provider)
 from react.render import RichRenderer
@@ -32,6 +34,7 @@ HELP_TEXT = """指令：
   /help          显示本帮助与当前绑定状态
   /binds         列出 5 个动作槽位的绑定状态
   /reset         清空会话上下文
+  /reload        重读磁盘上的 SKILL.md（改了 skill 不必重启；能力目录增删仍需重启）
   /continue      切换任务间记忆（开=下个任务带上上一任务的结论摘要）
   /save [文件]   导出会话全文为 Markdown（缺省自动时间戳命名）
   /quit          退出
@@ -198,6 +201,16 @@ def cmd_repl(skills_dir: Path, console: Console) -> None:
             elif cmd == "/reset":
                 context.reset()
                 render.info("会话已清空")
+            elif cmd == "/reload":
+                # 重读磁盘上的 SKILL.md：CLI 只在启动时建一次 registry，改了 skill
+                # 不重载就一直是旧的（Web 端每任务重建，天然免重启）。
+                registry.reload(service.skills_dir)
+                service._apply_skill_variants(registry)
+                for w in registry.warnings:
+                    render.warn(w)
+                render.success("已重载 skill（能力目录本身的新增/删除需重启）")
+                if registry.get("act").active_variant != DEFAULT_VARIANT:
+                    render.info(f"当前变体：{registry.get('act').active_variant}")
             elif cmd == "/save":
                 if arg:
                     save_path = Path(arg)
@@ -224,7 +237,80 @@ def cmd_repl(skills_dir: Path, console: Console) -> None:
         console.print(f"[{style}]循环结束：{result.status}（{result.rounds} 轮）[/]")
 
 
-def cmd_check(console: Console, skills_dir: Path) -> None:
+def _rewrite_skill_header(md: Path, slot: str, cap_name: str) -> None:
+    """把脚手架生成的 SKILL.md 头部改成"待写"状态。
+
+    以 `skills/` 为底会带来一份现成的通用协议文本（决策六值、判定语义、[RESULT] 格式、
+    工具面说明）——那是**骨架**，应当保留；但 description 与首行若原样留着，就会出现
+    "看起来写完了、其实是通用档"的能力。所以把这两处显式标成待写。
+    """
+    text = md.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith("name:"):
+            lines[i] = f"name: {slot}"
+        elif line.startswith("description:"):
+            lines[i] = (f"description: 【待写】{cap_name} 能力的 {slot} 阶段——"
+                        f"说明这个阶段在本能力下要做什么")
+        elif line.strip() and not line.startswith("#") and i > 0 and not lines[i - 1].startswith("---"):
+            lines[i] = (f"【待写】你是「{cap_name}」能力的 {slot} 阶段。"
+                        f"下面是通用骨架，请按本能力的领域改写。")
+            break
+    md.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def cmd_new_capability(name: str, console: Console, base_dir: Path = BASE_DIR,
+                       dest_root: Path | None = None) -> None:
+    """`--new-capability <名>`：生成一个能力的五阶段骨架，让你直接开始写。
+
+    以 default 能力（`<base>/skills`）为底——它是通用协议档，新能力应继承骨架、
+    只替换领域内容；而 `capabilities/coding` 是已特化过的写码版，拿它当模板会把
+    写码味道带进去。
+    """
+    # 拒绝非法名：能力名会被当目录名与配置值用，允许路径分隔符会逃出 capabilities/
+    if not name or any(ch in name for ch in '\\/:*?"<>|') or name != name.strip():
+        console.print(f"[red]能力名非法[/red]：{name!r}（不能含路径分隔符或空白）")
+        raise SystemExit(1)
+    base = Path(base_dir)
+    container = Path(dest_root) if dest_root else base / CAPABILITIES_DIR
+    target = container / name
+    if target.exists():
+        console.print(f"[red]已存在[/red]：{target}（不覆盖，以免毁掉已写内容）")
+        raise SystemExit(1)
+    src = base / "skills"
+    if not src.is_dir():
+        console.print(f"[red]模板缺失[/red]：{src} 不存在")
+        raise SystemExit(1)
+
+    target.mkdir(parents=True)
+    written: list[str] = []
+    for slot in ACTION_NAMES:
+        src_md = src / slot / "SKILL.md"
+        if not src_md.is_file():
+            continue
+        md = target / slot / "SKILL.md"
+        md.parent.mkdir(parents=True, exist_ok=True)
+        md.write_text(src_md.read_text(encoding="utf-8"), encoding="utf-8")
+        _rewrite_skill_header(md, slot, name)
+        written.append(f"{slot}/SKILL.md")
+    (target / "capability.json").write_text(
+        json.dumps({"name": name, "version": "0.1.0",
+                    "description": f"【待写】{name} 能力"}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8")
+
+    console.print(f"[green]✔ 已创建能力[/green]：{name} → {target}")
+    for rel in written:
+        console.print(f"[dim]    {rel}[/dim]")
+    console.print("[dim]    capability.json[/dim]")
+    console.print(f"\n[bold]下一步[/bold]：把各阶段里的「【待写】」按本能力领域改写，然后验证：")
+    console.print(f"  [cyan]python main.py --check --capability {name}[/cyan]"
+                  f"   # 确认五个槽位都由该能力提供")
+    console.print(f"  [cyan]python main.py --capability {name}[/cyan]         # 起会话试跑")
+    console.print("[dim]（骨架继承自 default 能力，通用协议部分可保留；"
+                  "只改与该能力领域相关的段落）[/dim]")
+
+
+def cmd_check(console: Console, skills_dir: Path | None) -> None:
     """`--check`：只校验配置并打印生效接入与当前 skill 绑定，不启动循环。
 
     存在的理由：启动脚本（start.bat）需要"配置好了没"的判断，而它自己那份内联
@@ -277,6 +363,9 @@ def main() -> None:
                         help="只校验配置并打印生效接入（0=可用 / 1=不可用），不启动循环")
     parser.add_argument("--smoke", action="store_true", help="冒烟测试（Mock 模型，零 API 消耗）")
     parser.add_argument("--smoke-live", action="store_true", help="冒烟测试（真实 kimi API）")
+    parser.add_argument("--new-capability", metavar="名字",
+                        help=f"生成一个新能力的五阶段骨架到 {CAPABILITIES_DIR}/<名字>/，"
+                             f"骨架继承 default 能力，待写处显式标注")
     parser.add_argument("--capability", metavar="名字",
                         help="按名字选用能力（如 coding）。与 --skills-dir 二选一；"
                              "都没给时用配置里的 active_capability（默认 default）")
@@ -296,7 +385,9 @@ def main() -> None:
         skills_dir = Path(args.capability)   # 名字交给 resolve_capability 解析
 
     console = Console()
-    if args.bind:
+    if args.new_capability:
+        cmd_new_capability(args.new_capability, console)
+    elif args.bind:
         cmd_bind(args.bind[0], args.bind[1], skills_dir, console)
     elif args.check:
         cmd_check(console, skills_dir)
