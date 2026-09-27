@@ -251,7 +251,6 @@ react-agent/
 
 - [docs/DESIGN.md](docs/DESIGN.md) —— 完整设计文档（状态机、协议、安全模型）
 - [docs/demo-brief.md](docs/demo-brief.md) —— 演示说明
-- [docs/LEDGER_FIX_PLAN.md](docs/LEDGER_FIX_PLAN.md) —— 消息账本修复计划
 
 ## 依赖
 

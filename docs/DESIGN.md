@@ -527,7 +527,7 @@ class LocalExecutor:
 | `providers.<name>.base_url` | — | 端点地址（必填） |
 | `providers.<name>.api_key` | — | 密钥（必填） |
 | `providers.<name>.model` | — | 模型名（必填） |
-| `providers.<name>.timeout_sec` | `step_timeout_sec` | 该 provider 的单步超时 |
+| `providers.<name>.timeout_sec` | 120 | 该 provider 的单步超时（**唯一**的超时旋钮；不再有全局 `step_timeout_sec`，避免两个同类设置） |
 
 运行时选项（与接入无关，改它们不影响生效 provider）：
 

@@ -407,17 +407,17 @@ def check_provider_config() -> list[str]:
             "ds": {"base_url": "https://a", "api_key": "ka", "model": "m-a", "timeout_sec": 11},
             "km": {"base_url": "https://b", "api_key": "kb", "model": "m-b"},
         },
-        "step_timeout_sec": 99,
     }
     eff = resolve_provider(cfg, "act")
     if eff["model"] != "m-a" or eff["base_url"] != "https://a" or eff["timeout_sec"] != 11:
         failures.append(f"active_provider 未生效：{eff}")
     if active_provider_name(cfg) != "ds":
         failures.append("active_provider_name 未返回 ds")
-    # 未给 timeout_sec 的 provider 回落到 step_timeout_sec
+    # 未写 timeout_sec 的 provider 回落到缺省值（不再有全局 step_timeout_sec）
     cfg["active_provider"] = "km"
-    if resolve_provider(cfg, "act")["timeout_sec"] != 99:
-        failures.append("provider 未继承 step_timeout_sec 作为默认超时")
+    from react.config import DEFAULT_STEP_TIMEOUT
+    if resolve_provider(cfg, "act")["timeout_sec"] != DEFAULT_STEP_TIMEOUT:
+        failures.append("provider 未回落到 DEFAULT_STEP_TIMEOUT")
 
     # 2) 多家却没指定 active_provider → 必须报错（避免"改了文件不知生效谁"）
     expect_error({"providers": {"a": {"base_url": "x", "api_key": "k", "model": "m"},
@@ -447,10 +447,10 @@ def check_provider_config() -> list[str]:
         failures.append(f"旧 profiles 数组未兼容：{eff}")
 
     # 4) 最旧形状兼容：顶层三件套
-    legacy_top = {"base_url": "https://top", "api_key": "kt", "model": "m-top",
-                  "step_timeout_sec": 33}
+    legacy_top = {"base_url": "https://top", "api_key": "kt", "model": "m-top"}
     eff = resolve_provider(legacy_top, "act")
-    if eff["model"] != "m-top" or eff["base_url"] != "https://top" or eff["timeout_sec"] != 33:
+    if eff["model"] != "m-top" or eff["base_url"] != "https://top" \
+            or eff["timeout_sec"] != DEFAULT_STEP_TIMEOUT:
         failures.append(f"旧顶层三件套未兼容：{eff}")
 
     # 5) 新形状优先于旧的同名字段（两套并存时不许含糊）
@@ -479,6 +479,25 @@ def check_provider_config() -> list[str]:
         failures.append("normalize_providers 未正确解析 profiles 数组")
     if set(normalize_providers(legacy_top)) != {"default"}:
         failures.append("normalize_providers 未把顶层三件套归为 default")
+
+    # 8) Web 配置白名单必须与 DEFAULTS / provider 字段完全对齐。
+    #    不对齐的后果是静默的：白名单缺项 → 页面里改了不生效；白名单多项 →
+    #    写进文件却没人读。这类漂移很容易在重构后悄悄出现。
+    from react.config import DEFAULTS, PROVIDER_FIELDS
+    from react.webapi import CONFIG_FIELDS, CONFIG_PROVIDER_FIELDS
+    editable = set(CONFIG_FIELDS) | set(CONFIG_PROVIDER_FIELDS)
+    missing = sorted(set(DEFAULTS) - editable)
+    extra = sorted(set(CONFIG_FIELDS) - set(DEFAULTS) - set(PROVIDER_FIELDS))
+    if missing:
+        failures.append(f"白名单缺少 DEFAULTS 里的字段（页面改不了）：{missing}")
+    if extra:
+        failures.append(f"白名单含非默认字段（写了也没人读）：{extra}")
+
+    # 9) 超时只有一处：providers.<name>.timeout_sec。曾经同时存在全局
+    #    `step_timeout_sec` 与 provider 级 timeout_sec，设置页里出现两个
+    #    "单步超时"，用户无从判断哪个生效——这类重复旋钮不留。
+    if "step_timeout_sec" in DEFAULTS or "step_timeout_sec" in CONFIG_FIELDS:
+        failures.append("step_timeout_sec 与 provider.timeout_sec 重复，应只保留后者")
     return failures
 
 

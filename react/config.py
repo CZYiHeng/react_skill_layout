@@ -38,10 +38,15 @@ PROVIDER_REQUIRED = ("base_url", "api_key", "model")
 #: 拼错的 `base_ur` 会让人对着一个"看起来配了却连不上"的文件排查半天。
 PROVIDER_FIELDS = ("base_url", "api_key", "model", "timeout_sec")
 
+#: provider 未显式给 `timeout_sec` 时的单步超时。
+#: 超时**只有** provider 级这一处旋钮：曾经同时存在全局 `step_timeout_sec` 与
+#: provider 级 timeout_sec，设置页里出现两个"单步超时"，用户无从判断哪个生效。
+#: 现在全局项已删除，这里只作缺省值。
+DEFAULT_STEP_TIMEOUT = 120
+
 # 默认值（config 未显式给出时补齐）
 DEFAULTS: dict = {
     "max_rounds": 10,
-    "step_timeout_sec": 120,
     "show_reasoning": True,
     "max_context_tokens": 200000,   # 压缩阈值（token）：下一次请求预估超过它才压缩
     "enable_shell_exec": False,
@@ -139,7 +144,7 @@ def normalize_providers(cfg: dict) -> dict[str, dict]:
     # 最旧的顶层三件套
     if any(cfg.get(k) for k in ("base_url", "api_key", "model")):
         top = {k: cfg[k] for k in ("base_url", "api_key", "model") if cfg.get(k)}
-        top.setdefault("timeout_sec", cfg.get("step_timeout_sec", DEFAULTS["step_timeout_sec"]))
+        top.setdefault("timeout_sec", DEFAULT_STEP_TIMEOUT)
         fallback = str(cfg.get("active_provider") or cfg.get("active_profile") or "default")
         out.setdefault(fallback, top)
     return out
@@ -181,10 +186,8 @@ def resolve_provider(cfg: dict, role: str = "act") -> dict:
         raise ConfigError("配置里没有任何模型接入：请提供 providers 或顶层 base_url/api_key/model")
     name = active_provider_name(cfg, provs)
     prof = dict(provs[name])
-    # 未显式给 timeout_sec 时沿用全局 `step_timeout_sec`——它是这些 provider 之外的
-    # 通用旋钮，此前只在"顶层三件套"那条路径被继承，providers map 里写了却没超时的
-    # 那一项会莫名回落到硬编码 120，与用户的 step_timeout_sec 不一致。
-    prof.setdefault("timeout_sec", cfg.get("step_timeout_sec", DEFAULTS["step_timeout_sec"]))
+    # 超时只有 provider 级这一处；没写就用缺省值（全局 step_timeout_sec 已删除）
+    prof.setdefault("timeout_sec", DEFAULT_STEP_TIMEOUT)
 
     for key in PROVIDER_REQUIRED:
         val = prof.get(key)

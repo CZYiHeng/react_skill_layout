@@ -98,7 +98,7 @@ export function providersOf(cfg) {
       base_url: cfg.base_url || '',
       api_key: cfg.api_key || '',
       model: cfg.model || '',
-      timeout_sec: cfg.step_timeout_sec ?? 120,
+      timeout_sec: 120,
     }
   }
   return out

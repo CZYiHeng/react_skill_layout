@@ -466,7 +466,7 @@ async def api_reset(request: Request) -> JSONResponse:
 #: 由 api_config_put 单独校验后整体写入，不能按标量强转。
 CONFIG_FIELDS: dict[str, type] = {
     "plan_model": str, "plan_timeout_sec": int,
-    "max_rounds": int, "step_timeout_sec": int, "show_reasoning": bool,
+    "max_rounds": int, "show_reasoning": bool,
     "max_context_tokens": int, "exec_timeout_sec": int,
     "enable_shell_exec": bool, "enable_file_write": bool,
     "sandbox_shell": bool, "sandbox_integrity_low": bool,

@@ -235,7 +235,6 @@ export default function SettingsModal({ onClose, onSaved, allowOutside: currentA
         </select>
       </label>
       {intField('max_rounds', '最大轮数')}
-      {intField('step_timeout_sec', '单步超时(秒)')}
       {intField('max_context_tokens', '上下文预算(token)', '预估 prompt 超此值才压缩；调小=更省但压缩更频繁')}
       <label className="set-toggle">
         <input type="checkbox" checked={!!form?.show_reasoning} onChange={(e) => set('show_reasoning', e.target.checked)} />
