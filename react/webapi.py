@@ -167,7 +167,7 @@ async def api_session(request: Request) -> JSONResponse:
             "shell": bool(cfg.get("enable_shell_exec")),
             "file_write": bool(cfg.get("enable_file_write")),
             "sandbox": bool(cfg.get("sandbox_shell")),
-            "gate_mode": cfg.get("gate_mode", "plan"),
+            "gate_mode": cfg.get("gate_mode", "auto"),
             "work_dir": str(resolve_work_dir(
                 BASE_DIR, cfg.get("work_dir") or None,
                 allow_outside=bool(cfg.get("allow_outside_work_dir", False)),
@@ -374,9 +374,12 @@ def _run_review(cfg: dict, markdown: str, base_dir: Path) -> str:
                 skill_texts.append(f"### {skill_dir.name.upper()} SKILL.md\n{sk.read_text(encoding='utf-8')}")
     skills_block = "\n\n".join(skill_texts)
 
+    # 走 active_profile：多档案部署下顶层 base_url/api_key 常是空占位，
+    # 直接用顶层字段会打到错端点（或空 key）。审查与推理必须用同一份凭据。
+    prof = _active_profile_cfg(cfg)
     client = OpenAIClient(
-        cfg.get("base_url", ""), cfg.get("api_key", ""),
-        cfg.get("model", ""), 300,
+        prof.get("base_url", ""), prof.get("api_key", ""),
+        prof.get("model", ""), 300,
     )
 
     prompt = f"""你是 ReAct Agent 框架审查员。对照下面的 Skill 要求，审查这段会话记录是否合规。
