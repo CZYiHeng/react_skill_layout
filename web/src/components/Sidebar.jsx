@@ -8,10 +8,10 @@ const SLOTS = [
 ]
 
 const GATE_MODES = [
-  { value: 'plan', label: '计划', hint: '计划出来后确认一次，之后自动跑到异常或验收' },
+  { value: 'auto', label: '自动', hint: '只在发现缺陷或最终验收时暂停（默认）' },
+  { value: 'plan', label: '计划', hint: '计划出来后额外确认一次，再自动跑到异常或验收' },
   { value: 'step', label: '步进', hint: '每个步骤完成后暂停一次' },
-  { value: 'auto', label: '自动', hint: '只在发现缺陷或最终验收时暂停' },
-  { value: 'phase', label: '阶段', hint: '每个阶段结束时确认一次' },
+  { value: 'phase', label: '阶段', hint: '每个阶段结束时确认一次（旧行为）' },
 ]
 
 const STATUS_TEXT = {

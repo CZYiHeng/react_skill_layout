@@ -7,10 +7,10 @@ import * as api from '../api'
 
 const GATE_MODES = ['plan', 'step', 'auto', 'phase']
 const GATE_LABELS = {
-  plan: '计划：每个阶段前确认',
-  step: '步进：每一步都确认',
-  auto: '自动：仅缺陷与最终验收暂停',
-  phase: '阶段：阶段结束时确认',
+  auto: '自动：仅缺陷与最终验收暂停（默认）',
+  plan: '计划：计划产出后额外确认一次',
+  step: '步进：每个步骤收尾都确认',
+  phase: '阶段：每个阶段都确认（旧行为）',
 }
 
 const SECTIONS = [
@@ -218,7 +218,7 @@ export default function SettingsModal({ onClose, onSaved, allowOutside: currentA
     <>
       <label className="set-field">
         <span>闸门档位</span>
-        <select value={form?.gate_mode ?? 'plan'} onChange={(e) => set('gate_mode', e.target.value)}>
+        <select value={form?.gate_mode ?? 'auto'} onChange={(e) => set('gate_mode', e.target.value)}>
           {GATE_MODES.map((m) => <option key={m} value={m}>{GATE_LABELS[m] || m}</option>)}
         </select>
       </label>

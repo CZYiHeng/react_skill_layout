@@ -11,7 +11,7 @@ export const initialState = {
   items: [], // 已定稿条目
   live: null, // { action, text } 正在流式输出
   awaiting: null, // null | 'gate' | 'ask'
-  gateMode: 'plan', // plan=计划批准一次 | step=每步骤拦一次 | auto=仅必须拦时
+  gateMode: 'auto', // auto=仅必须拦时 | plan=计划批准一次 | step=每步骤拦一次
   gateReason: '', // 本次拦截的原因（后端下发）
   gateCount: 0, // 本次任务被打断次数
   workDir: '', // 工作目录（项目内子目录，空=项目根目录）
