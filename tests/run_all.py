@@ -66,7 +66,7 @@ def run_smoke(live: bool, skills_dir: Path, base_dir: Path,
         task = "冒烟测试任务"
 
     recorder = _RecordingExecutor()
-    context = SessionContext(max_rounds=5, max_context_messages=12)
+    context = SessionContext(max_rounds=5)
     loop = ReActLoop(registry, context, model, render, gate=None,
                      ask=lambda q: "冒烟回答：输入已确认", executor=recorder)
     result = loop.run(task)

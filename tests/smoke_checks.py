@@ -152,12 +152,14 @@ def check_executor_defaults(base_dir: Path) -> list[str]:
 def check_context_windowing() -> list[str]:
     """问题③：上下文窗口化——压缩旧消息、限制窗口、不动全量账本。
 
-    触发口径现已改为 **token 压力**（`max_context_tokens`）为主、条数（`max_context_messages`）
-    为硬上限兜底；本断言用后者构造可复现的压缩，并验证窗口不再无限增长。
+    触发口径现已改为 **token 压力**（`max_context_tokens`）为主、条数护栏
+    （`_max_window_messages`，内部量、不再是配置键）兜底；本断言直接设护栏、
+    并关掉 token 触发，以复现旧的条数路径来验证窗口化契约本身。
     """
     failures: list[str] = []
-    # 关掉 token 触发，只看条数硬上限这条路径（token 路径由 check_token_budget 覆盖）
-    _c = SessionContext(max_context_messages=4, max_context_tokens=0)
+    # 关掉 token 触发，只看条数护栏这条路径（token 路径由 check_token_budget 覆盖）
+    _c = SessionContext(max_context_tokens=0)
+    _c._max_window_messages = 4
     for i in range(20):
         _c.add_user(f"u{i}")
         _c.add_assistant(f"a{i}")
@@ -221,7 +223,8 @@ def check_cache_prefix() -> list[str]:
         wins = [*msgs[:1], *msgs[ctx._digest_upto:]]
         return ctx._digest_upto, wins, msgs
 
-    ctx = SessionContext(max_context_messages=4, max_context_tokens=0)
+    ctx = SessionContext(max_context_tokens=0)
+    ctx._max_window_messages = 4
     for i in range(30):
         ctx.add_user(f"u{i}")
         ctx.add_assistant(f"a{i}")
@@ -306,10 +309,10 @@ def check_token_budget() -> list[str]:
     failures: list[str] = []
     act = Action(name="act", skill_body="正文")
 
-    # 1) 条数远未达上限，但 token 压力超标 → 必须压缩
+    # 1) 条数远未达护栏，但 token 压力超标 → 必须压缩
     # 预算要大于 system+skill+tools 的开销（否则任何组装都"超预算"，测不出东西）
-    ctx = SessionContext(max_context_messages=400, max_context_tokens=6000)
-    for i in range(30):                     # 60 条，离 400 条差得远
+    ctx = SessionContext(max_context_tokens=6000)
+    for i in range(30):                     # 60 条，离 400 条护栏差得远
         ctx.add_user("x" * 400)             # 每条约 200 token
         ctx.add_assistant("y" * 400)
     before = len(ctx.messages)
@@ -321,17 +324,18 @@ def check_token_budget() -> list[str]:
     if len(ctx.messages) != before:
         failures.append("压缩不应改动全量账本")
 
-    # 2) 反过来：条数超硬上限必须压缩（护栏路径）
-    ctx2 = SessionContext(max_context_messages=16, max_context_tokens=0)
+    # 2) 反过来：条数超护栏必须压缩（护栏路径，内部量直接赋值）
+    ctx2 = SessionContext(max_context_tokens=0)
+    ctx2._max_window_messages = 16
     for i in range(40):
         ctx2.add_user(f"u{i}")
         ctx2.add_assistant(f"a{i}")
     ctx2.build_step_messages(act, "执行")
     if ctx2._digest_upto == 0:
-        failures.append("条数超硬上限却未压缩（硬上限失效）")
+        failures.append("条数超护栏却未压缩（护栏失效）")
 
     # 3) 两者都没超 → 一条都不许动（保证不无谓压缩、不打断前缀缓存）
-    ctx3 = SessionContext(max_context_messages=400, max_context_tokens=10_000_000)
+    ctx3 = SessionContext(max_context_tokens=10_000_000)
     for i in range(5):
         ctx3.add_user(f"u{i}")
         ctx3.add_assistant(f"a{i}")
@@ -341,14 +345,15 @@ def check_token_budget() -> list[str]:
     if len(msgs3) != 1 + 10 + 1:            # system + 10 条原文 + 尾部指令
         failures.append(f"预算充足时窗口应完整：{len(msgs3)}")
 
-    # 4) 回滚开关：max_context_tokens=0 时退回纯条数口径
-    ctx4 = SessionContext(max_context_messages=4, max_context_tokens=0)
+    # 4) 回滚开关：max_context_tokens=0 时只剩条数护栏
+    ctx4 = SessionContext(max_context_tokens=0)
+    ctx4._max_window_messages = 4
     for i in range(20):
         ctx4.add_user(f"u{i}")
         ctx4.add_assistant(f"a{i}")
     ctx4.build_step_messages(act, "执行")
     if ctx4._digest_upto == 0:
-        failures.append("max_context_tokens=0 时未退回条数口径（回滚开关失效）")
+        failures.append("max_context_tokens=0 时条数护栏未生效（回滚开关失效）")
     return failures
 
 
@@ -415,7 +420,7 @@ def check_session_memory(base_dir: Path) -> list[str]:
                          ask=lambda q: "冒烟回答：输入已确认")
 
     # 1) 默认关闭：第二个任务的账本不得含上一个任务的任何痕迹
-    ctx = SessionContext(max_rounds=5, max_context_messages=100)
+    ctx = SessionContext(max_rounds=5)
     loop = _loop(ctx)
     loop.run("第一个任务：甲")
     first_msgs = list(ctx.messages)
@@ -433,7 +438,7 @@ def check_session_memory(base_dir: Path) -> list[str]:
         failures.append("任务结束后未记录会话记忆摘要")
 
     # 3) 开启接续：注入一条会话记忆，且**不重放**上个任务的账本
-    ctx2 = SessionContext(max_rounds=5, max_context_messages=100)
+    ctx2 = SessionContext(max_rounds=5)
     loop2 = _loop(ctx2)
     loop2.run("第一个任务：甲", continue_session=False)
     prev_len = len(ctx2.messages)
@@ -795,7 +800,7 @@ def check_tool_window() -> list[str]:
         name = "act"
         skill_body = "skill"
 
-    ctx = SessionContext(max_rounds=5, max_context_messages=16)
+    ctx = SessionContext(max_rounds=5)
     # 索引 1-2：工具对切在窗口外（压缩后整对进摘要，绝不能只剩回执）。
     ctx.add_user("任务")                                   # 0（任务锚点，始终保留）
     ctx.add_assistant("", tool_calls=[{"id": "call_1", "type": "function",
@@ -952,7 +957,7 @@ def check_native_tools(base_dir: Path) -> list[str]:
     registry.load(base_dir / "skills")
     model = MockClient(emit_file_tools=True)
     recorder = _RecordingExecutor()
-    ctx = SessionContext(max_rounds=5, max_context_messages=12)
+    ctx = SessionContext(max_rounds=5)
     loop = ReActLoop(registry, ctx, model, render, gate=None,
                      ask=lambda q: "冒烟回答：输入已确认", executor=recorder)
     result = loop.run("原生工具测试任务")
@@ -979,7 +984,7 @@ def check_native_tools(base_dir: Path) -> list[str]:
 
     model2 = MockClient(emit_file_tools=True)
     recorder2 = _RecordingExecutor()
-    ctx2 = SessionContext(max_rounds=5, max_context_messages=12)
+    ctx2 = SessionContext(max_rounds=5)
     loop2 = ReActLoop(registry, ctx2, model2, render, gate=None,
                       ask=lambda q: "冒烟回答：输入已确认", executor=_ThrowingExecutor())
     result2 = loop2.run("工具异常测试任务")
@@ -998,7 +1003,7 @@ def check_native_tools(base_dir: Path) -> list[str]:
     # 5) context 清理：缺回执的 assistant(tool_calls) 整对丢弃（防 API 400）
     from react.context import SessionContext as SC
     from react.action import ActionRegistry as AR2
-    bad = SC(max_rounds=5, max_context_messages=12)
+    bad = SC(max_rounds=5)
     bad.add_user("任务")
     bad.add_assistant("", tool_calls=[{"id": "x1", "type": "function",
                                        "function": {"name": "read",
@@ -1032,7 +1037,7 @@ def check_token_stats(base_dir: Path) -> list[str]:
     registry.load(base_dir / "skills")
     model = MockClient(emit_file_tools=True)
     recorder = _RecordingExecutor()
-    ctx = SessionContext(max_rounds=5, max_context_messages=12)
+    ctx = SessionContext(max_rounds=5)
     loop = ReActLoop(registry, ctx, model, render, gate=None,
                      ask=lambda q: "冒烟回答：输入已确认", executor=recorder)
     loop.run("token 统计测试任务")

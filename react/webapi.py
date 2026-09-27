@@ -465,7 +465,7 @@ CONFIG_FIELDS: dict[str, type] = {
     "model": str, "base_url": str, "api_key": str,
     "plan_model": str, "plan_timeout_sec": int,
     "max_rounds": int, "step_timeout_sec": int, "show_reasoning": bool,
-    "max_context_messages": int, "max_context_tokens": int, "exec_timeout_sec": int,
+    "max_context_tokens": int, "exec_timeout_sec": int,
     "enable_shell_exec": bool, "enable_file_write": bool,
     "sandbox_shell": bool, "sandbox_integrity_low": bool,
     "shell_backend": str,

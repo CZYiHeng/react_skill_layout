@@ -267,8 +267,9 @@ class SessionContext:
 
 要点：
 
-- 每步调用的 system = **全局协议说明**（ReAct 规则、输出标签要求）+ **该动作绑定的 skill 正文** + **（可选）历史摘要** + **当前步骤指令**
-- **全量账本始终保留**（`self.messages` 不裁剪），`/save` 导出的是完整轨迹；仅"发给模型的"做窗口化（问题③）：始终保留首条任务锚点 + 最近 `max_context_messages` 条原文，更早消息折成 ≤20 行摘要并入 system，**不改动全量账本**，故窗口化不会丢失可追溯性
+- 每步调用的 **system 完全静态**（仅全局协议 + 运行环境，任意阶段/轮次逐字节相同）；阶段名、该动作绑定的 skill 正文、当前步骤指令、历史摘要全部放在**尾部最后一条 user**，让所有调用共享同一缓存前缀
+- **全量账本始终保留**（`self.messages` 不裁剪），`/save` 导出的是完整轨迹；仅"发给模型的"做窗口化（问题③）：始终保留首条任务锚点 + 窗口内原文，更早消息折成摘要放进**尾部 user**（不是 system——放中段会破坏缓存前缀），**不改动全量账本**，故窗口化不会丢失可追溯性
+- **压缩由 token 压力触发**（`max_context_tokens`，见 §配置字段）：每次调用后用 provider 实测 usage 校准"下一次请求大概多少 token"，超阈值才压缩一次。早先按条数触发会因为条数表达不了真实体量而频繁压缩，把 provider 的前缀缓存反复打断；条数现在只是内部护栏（`context._max_window_messages`，400 条）防病态长尾
 - `/reset` 清空重来；`/save` 导出 Markdown（含 `tool_calls` / `role=tool` 回执）
 
 ### 3.6 react/render.py — 终端渲染
@@ -506,7 +507,7 @@ class LocalExecutor:
   "max_rounds": 10,
   "step_timeout_sec": 120,
   "show_reasoning": true,
-  "max_context_messages": 12,
+  "max_context_tokens": 100000,
   "enable_shell_exec": false,
   "enable_file_write": false,
   "exec_timeout_sec": 30
@@ -521,7 +522,7 @@ class LocalExecutor:
 | `max_rounds` | 10 | 单任务最大轮数，超限强制退出并提示人工接管 |
 | `step_timeout_sec` | 120 | 单步模型调用超时（含重试） |
 | `show_reasoning` | true | 是否展示模型思考过程（kimi `reasoning_content`） |
-| `max_context_messages` | 12 | 发给模型的最近原文条数上限；超出部分折成摘要（问题③窗口化） |
+| `max_context_tokens` | 100000 | 压缩阈值（token）：用实测 usage 预估"下一次请求的压力"，超阈值才压缩一次。调大=命中更高、单次请求更大；`<=0` 取消预算（回滚开关） |
 | `enable_shell_exec` | false | 是否允许 ACT 经 `[EXEC: shell]` 真实执行命令（问题④，默认关） |
 | `enable_file_write` | false | 是否允许 ACT 经 `[EXEC: write]` 真实写文件（默认关，路径限 cwd 内） |
 | `exec_timeout_sec` | 30 | shell 执行超时 |

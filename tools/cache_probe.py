@@ -66,9 +66,13 @@ def install_legacy_window() -> None:
     """把 SessionContext 换回改造前的滑动窗口语义（用于 A/B 对比）。
 
     还原点有二：
-    1. 每次调用都按「最近 max_context_messages 条」重算窗口起点（`_window_start`）；
+    1. 每次调用都按「最近 N 条」重算窗口起点（`_window_start`）；
     2. 摘要随窗口一起重算，而不是冻结。
     于是窗口每滑动一条，历史**中段**就被改写一次。
+
+    注意：改造后 `max_context_messages` 配置键已删除，条数退为内部护栏
+    `_max_window_messages`。本函数读的正是那个内部量，所以对比依然成立——
+    它模拟的是"旧口径按条数压"，与当前"按 token 压力压"形成对照。
     """
     def _legacy_window_start(self, keep: int) -> int:
         start = max(1, len(self.messages) - keep)
@@ -79,8 +83,9 @@ def install_legacy_window() -> None:
     def _legacy_build(self, action, step_prompt):
         history = self.messages
         digest = ""
-        if self.max_context_messages > 0 and len(history) > self.max_context_messages:
-            keep = self.max_context_messages
+        keep_cap = self._max_window_messages
+        if keep_cap > 0 and len(history) > keep_cap:
+            keep = keep_cap
             head = history[:1]
             tail = history[self._legacy_window_start(keep):]
             dropped = history[1:len(history) - len(tail)]
@@ -154,11 +159,16 @@ def metrics(wire: list[list[dict]]) -> dict:
     }
 
 
-def scenario_loop(budget: int, repeats: int) -> list[list[dict]]:
-    """真实 agent 循环：同一个 SessionContext 连续跑多个任务。"""
+def scenario_loop(guard: int, repeats: int) -> list[list[dict]]:
+    """真实 agent 循环：同一个 SessionContext 连续跑多个任务。
+
+    `guard` 是条数护栏 `_max_window_messages`（内部量，不再是配置键）；
+    token 预算保持默认，所以"当前实现"这一侧根本不会被条数触发。
+    """
     registry = ActionRegistry()
     registry.load(BASE_DIR / "skills")
-    ctx = SessionContext(max_rounds=6, max_context_messages=budget)
+    ctx = SessionContext(max_rounds=6)
+    ctx._max_window_messages = guard
     model = RecordingModel(MockClient(verify_fail_once=True, observe_defect_once=True))
     loop = ReActLoop(registry, ctx, model, NullRenderer(), gate=None,
                      ask=lambda q: "冒烟回答：输入已确认")
@@ -167,12 +177,13 @@ def scenario_loop(budget: int, repeats: int) -> list[list[dict]]:
     return model.wire
 
 
-def scenario_append(budget: int, steps: int) -> list[list[dict]]:
+def scenario_append(guard: int, steps: int) -> list[list[dict]]:
     """合成负载：账本纯追加 N 步，每步组装一次（隔离出窗口策略本身的影响）。"""
     from react.action import Action
 
-    ctx = SessionContext(max_context_messages=budget)
-    for i in range(budget + 4):
+    ctx = SessionContext()
+    ctx._max_window_messages = guard
+    for i in range(guard + 4):
         ctx.add_user(f"初始 {i}")
         ctx.add_assistant(f"应答 {i}")
     act = Action(name="act", skill_body="阶段正文")

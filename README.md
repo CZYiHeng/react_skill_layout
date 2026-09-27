@@ -15,7 +15,7 @@
 - **三入口同一核心**：终端 REPL（rich 分色面板）、Web 对话（React + SSE）、MCP 工具（WorkBuddy 自动化）。
 - **安全执行**：`[EXEC: shell|write]` 默认关闭；工作目录越界拒绝；Windows 提供 OS 级沙箱（受限令牌 + 作业对象，纯 ctypes 零依赖）。
 - **上下文窗口化**：消息窗口 + 历史摘要，长任务不爆上下文。
-- **缓存友好的前缀（省 token）**：发给模型的消息前缀**只追加、不回改**——稳定 system、冻结的历史摘要、历史原文一律按序追加，利用率最高的开头部分始终能被 provider 的前缀缓存命中（DeepSeek 自动硬盘缓存 / Kimi context caching）。`max_context_messages` 是压缩触发预算，调大则命中率更高、单次请求更大；实测离线探针（`tools/cache_probe.py`）纯追加负载逐字复用率 **12% → 78%**。
+- **缓存友好的前缀（省 token）**：发给模型的消息前缀**只追加、不回改**——稳定 system、冻结的历史摘要、历史原文一律按序追加，利用率最高的开头部分始终能被 provider 的前缀缓存命中（DeepSeek 自动硬盘缓存 / Kimi context caching）。`max_context_tokens` 是压缩触发阈值（按实测 usage 预估下一次请求的压力），调大则命中率更高、单次请求更大；实测离线探针（`tools/cache_probe.py`）纯追加负载逐字复用率 **12% → 78%**。
 - **双通道控制信号**：原生工具调用为主、正则文本解析兜底；歧义时自我修正最多 2 次，随后走安全默认。
 
 ## 快速开始
@@ -205,8 +205,10 @@ uv run python tools/cache_probe.py    # 离线缓存探针：改造前/后逐字
 - **`[EXEC:]` 默认不执行**：`enable_shell_exec` / `enable_file_write` 默认关闭，
   开启后 agent 才能真正跑命令、写文件（写盘范围受 `work_dir` 约束）。
 - **压缩看 token 预算，不看条数**：`max_context_tokens`（默认 100000）是压缩阈值。
-  每次调用后用 provider 的实测 usage 校准"下一次请求大概多少 token"，超阈值才压缩一次；
-  `max_context_messages`（默认 400）只是防长尾的硬上限。
+  每次调用后用 provider 的实测 usage 校准"下一次请求大概多少 token"，超阈值才压缩一次。
+  早先的 `max_context_messages`（条数预算）**已删除**：它与 token 预算并列摆放，容易被
+  当成"上下文大小"旋钮一直留着（12 条会让压缩频繁触发、把前缀缓存反复打断）。
+  条数只剩一个内部护栏（400 条）防病态长尾。
   **判据：如果 `/api/token_stats` 里 `cache_hit_rate` 长期低于 40%，说明预算仍偏小**
   （压缩太频繁会把 provider 的前缀缓存反复打断）——上调 `max_context_tokens`，
   窗口小于 128k 的模型则按「窗口 × 0.6」下调。

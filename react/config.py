@@ -35,7 +35,6 @@ DEFAULTS: dict = {
     "max_rounds": 10,
     "step_timeout_sec": 120,
     "show_reasoning": True,
-    "max_context_messages": 400,
     "max_context_tokens": 100000,   # 压缩阈值（token）：下一次请求预估超过它才压缩
     "enable_shell_exec": False,
     "enable_file_write": False,
@@ -71,9 +70,12 @@ GATE_MODES = ("plan", "step", "auto", "phase")
 #: （实测同会话 prompt 非单调 19358→16481，OBSERVE 命中率仅 3.3%）。
 #: 取 100k 是与端点窗口对齐后的保守值（DeepSeek 1M / Kimi 256k / 常见端点 128k），
 #: 留足输出预算。窗口更小的模型请按"窗口 × 0.6"下调。
-#: 设为 0 或负数 = 退回旧的条数触发（回滚开关）。
+#: 设为 0 或负数 = 取消上下文预算（只剩内部条数护栏兜底），即回滚开关。
 #:
-#: max_context_messages 语义：**硬上限**（条数），只防病态膨胀，不再主导压缩。
+#: 注：早先还有一个 `max_context_messages`（条数预算）配置键，已**删除**。
+#: 它与 token 预算并列摆放，容易被当成"上下文大小"旋钮一直留着（实测就有人把
+#: 12 留在配置里），而 12 条这个量级会让压缩频繁触发、把前缀缓存反复打断——
+#: 正是本次要修的根因。条数护栏现在只是内部量（见 context._max_window_messages）。
 
 _PLACEHOLDER_HINT = "<在此填入"
 

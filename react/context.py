@@ -85,16 +85,19 @@ class SessionContext:
     plan: list[tuple[str, str]] = field(default_factory=list)  # [(步骤, 完成标准)]
     plan_index: int = 0
     max_rounds: int = 10
-    # 发送给模型的最近原文条数**预算**：只在超预算时压缩一次，压缩时一次剪到预算一半，
-    # 于是两次压缩之间窗口纯追加地增长，前缀缓存持续命中。<=0 表示不压缩（全量发送）。
-    # 调小 = 省上下文但压缩更频繁、缓存命中更低（见 react/config.py 的说明）。
-    max_context_messages: int = 100
+    #: **窗口条数护栏**（内部量，不出现在 config 里）：条数超它就压缩一次，防极端长尾
+    #: 把账本拖爆。它**不是**上下文预算的调节旋钮——那件事由 `max_context_tokens` 负责。
+    #: 之所以原本的 `max_context_messages` 配置键被删掉：它和 token 预算并列摆放，
+    #: 让人以为是"上下文大小"设置（实测就有人把 12 一直留着），而 12 条这个量级会
+    #: 让压缩频繁触发、把 provider 的前缀缓存反复打断。留着默认 400，正常任务
+    #: （20~40 条）永不触发；构造测试时可直接赋值以逼出条数路径。
+    _max_window_messages: int = 400
     #: **压缩阈值（token）**：下一次请求的预估 prompt 超过它才压缩。
     #: 旧实现按「条数」触发，而条数表达不了"这次请求要花多少 prompt tokens"——
     #: 一条 tool 回执上万字符也算 1 条，于是长任务在真实负载下被频繁压缩，
     #: 而 provider 的前缀缓存要求完整匹配缓存前缀单元，压缩一次就作废其后全部缓存
     #: （实测同会话 prompt 非单调：19358→16481，OBSERVE 命中率仅 3.3%）。
-    #: <=0 表示不按 token 压缩，退回旧的条数触发（回滚开关）。
+    #: **<=0 表示整体取消上下文预算**（只剩下面的护栏兜底），即回滚开关。
     max_context_tokens: int = 100000
     # 运行环境信息（OS/shell/cwd/工具可用性），拼进每步 system 提示
     env_info: str = ""
@@ -230,14 +233,14 @@ class SessionContext:
 
     @property
     def effective_budget(self) -> int:
-        """实际生效的窗口预算：配置值小于 `_MIN_BUDGET` 时抬到 `_MIN_BUDGET`。
+        """实际生效的窗口条数护栏：小于 `_MIN_BUDGET` 时抬到 `_MIN_BUDGET`。
 
-        小于 `_MIN_KEEP` 的预算会让「压缩后保留量」超过预算本身，压缩刚结束就再次
-        超限，窗口失控且每步都压缩——那比不压缩还糟。0/负数仍表示「不压缩」。
+        小于 `_MIN_KEEP` 的护栏会让「压缩后保留量」超过护栏本身，压缩刚结束就再次
+        超限，窗口失控且每步都压缩——那比不压缩还糟。0/负数表示不设条数护栏。
         """
-        if self.max_context_messages <= 0:
+        if self._max_window_messages <= 0:
             return 0
-        return max(self.max_context_messages, _MIN_BUDGET)
+        return max(self._max_window_messages, _MIN_BUDGET)
 
     def _align_window_start(self, start: int) -> int:
         """窗口起点对齐：绝不把 assistant(tool_calls) 与它的 role=tool 回执切开。
@@ -259,11 +262,11 @@ class SessionContext:
 
         两个条件任一成立才压缩：
         - token 压力 >= `max_context_tokens`（主路径）；
-        - 条数 >= `max_context_messages`（硬上限，防极端长尾把账本拖爆）。
+        - 条数 >= `_max_window_messages`（内部护栏，防极端长尾把账本拖爆）。
 
-        注意硬上限的代价：它**忽略单条大小**，所以一条超大消息也会触发一次压缩。
+        注意护栏的代价：它**忽略单条大小**，所以一条超大消息也会触发一次压缩。
         这是护栏应有的取舍——宁可多压一次，也不让窗口无限增长。
-        `max_context_tokens<=0` 时退回纯条数口径，保留回滚开关。
+        `max_context_tokens<=0` 时压缩**整体关闭**（回滚开关）。
         """
         if self.max_context_tokens > 0 and self.pressure_tokens() >= self.max_context_tokens:
             return True

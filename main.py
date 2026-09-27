@@ -153,7 +153,7 @@ def cmd_repl(skills_dir: Path, console: Console) -> None:
                   f" · 沙箱={'OS级' if cfg['enable_shell_exec'] and cfg['sandbox_shell'] else '关'}"
                   + (f"(低完整性)" if cfg.get('sandbox_integrity_low') else "")
                   + f" · 上下文预算={cfg['max_context_tokens']} token"
-                  f"（硬上限 {cfg['max_context_messages']} 条）[/dim]")
+                  f"（超预算才压缩）[/dim]")
 
     # 任务间记忆开关：默认关（新任务 = 全新会话）。追问/接续前用 /continue 打开。
     continue_session = False
