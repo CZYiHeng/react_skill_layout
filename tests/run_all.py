@@ -85,6 +85,7 @@ def run_smoke(live: bool, skills_dir: Path, base_dir: Path,
     failures += C.check_ask_limit(registry, render, recorder)
     failures += C.check_executor_defaults(base_dir)
     failures += C.check_context_windowing()
+    failures += C.check_cache_prefix()
     failures += C.check_tool_window()
     failures += C.check_sandbox_nested()
     failures += C.check_plan_revision()
@@ -95,14 +96,23 @@ def run_smoke(live: bool, skills_dir: Path, base_dir: Path,
     failures += C.check_gate_mode()
     failures += C.check_interrupt()
     failures += C.check_work_dir(base_dir)
-    failures += C.check_native_tools()
-    failures += C.check_token_stats()
+    failures += C.check_native_tools(base_dir)
+    failures += C.check_token_stats(base_dir)
     return failures, None
 
 
 def main() -> int:
     """独立入口：python -m tests.run_all [--live]"""
     from rich.console import Console
+
+    # Windows 控制台 UTF-8 防护（与 main.py 同形）：断言文案与 rich 面板里都有
+    # ✔/✘/◆ 等非 GBK 字符，不重配置编码时 `python -m tests.run_all` 会直接
+    # UnicodeEncodeError 崩掉（main.py 的 --smoke 路径因为先导入 main.py 才躲过）。
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except (AttributeError, OSError, ValueError):
+            pass
 
     base = Path(__file__).resolve().parent.parent
     console = Console()

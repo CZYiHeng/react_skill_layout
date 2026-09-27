@@ -379,7 +379,7 @@ class ReactService:
     def build_context(self, max_rounds: int | None = None) -> SessionContext:
         return SessionContext(
             max_rounds=int(max_rounds or self.cfg.get("max_rounds", 10)),
-            max_context_messages=int(self.cfg.get("max_context_messages", 50)),
+            max_context_messages=int(self.cfg.get("max_context_messages", 100)),
             env_info=self._build_env_info(),
         )
 
@@ -463,7 +463,7 @@ class ReactService:
         """构造一次运行所需的全部对象并接线（gate/ask 由 control 提供）。
 
         context 传入时复用（Web 会话需要跨多轮任务保持同一上下文），否则新建。
-        gate_mode 为 None 时取配置值（默认 step）。
+        gate_mode 为 None 时取配置值（默认 auto，见 react/config.py 的 DEFAULTS）。
         """
         control = control or AutoControl()
         registry = self.build_registry()
@@ -475,7 +475,7 @@ class ReactService:
         else:
             act_model = self.build_model("act")
             plan_model = self.build_model("plan")
-        mode = gate_mode or self.cfg.get("gate_mode", "plan")
+        mode = gate_mode or self.cfg.get("gate_mode", "auto")
         ask_fn = control.as_ask()
         if mode == "auto":
             ask_fn = lambda q: "（自动回答：继续）"

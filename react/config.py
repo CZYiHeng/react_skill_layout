@@ -35,23 +35,36 @@ DEFAULTS: dict = {
     "max_rounds": 10,
     "step_timeout_sec": 120,
     "show_reasoning": True,
-    "max_context_messages": 12,
+    "max_context_messages": 100,
     "enable_shell_exec": False,
     "enable_file_write": False,
     "exec_timeout_sec": 30,
     "sandbox_shell": False,
     "sandbox_integrity_low": False,
     "shell_backend": "cmd",      # cmd / bash / auto；auto=探测 Git Bash，找不到回退 cmd
-    "gate_mode": "plan",
+    "gate_mode": "auto",
     "work_dir": "",
     "allow_outside_work_dir": False,
     "plan_model": "",            # 计划阶段专用模型（推理模型如 deepseek-reasoner）；空=与 model 相同
     "plan_timeout_sec": 300,     # 计划模型超时（推理模型更慢，默认更长）
 }
 
-#: 人工闸门档位。plan=计划批准一次后放行（默认，推荐）
-#: step=每步骤一次 / auto=连计划也不拦 / phase=每阶段一次（旧行为，回滚开关）
+#: 人工闸门档位。auto=只在「需要人决策」时拦（默认）
+#: step=每个计划步骤收尾都拦 / plan=计划产出后额外拦一次 / phase=每阶段都拦（旧行为，回滚开关）
+#:
+#: 为什么默认 auto：闸门的目的是「在需要人决定时介入」，而 plan 档把它变成「每个任务
+#: 无条件拦一次」——问答类、只读类任务被无差别打断，人手一慢就卡在那儿。
+#: 「计划跑偏」这件事框架已有独立于闸门的兜底（连续 3 次未通过强制重出计划、max_rounds、
+#: 判定歧义默认不通过/移交），所以默认不靠人肉审批也不掉质量：打断从「无差别」变「定向」。
+#: 长任务想强制先看计划再开跑，把 gate_mode 显式设为 "plan" 即可。
 GATE_MODES = ("plan", "step", "auto", "phase")
+
+#: max_context_messages 语义：**发送给模型的最近原文条数预算**。
+#: 它是「压缩多久触发一次」的权衡，不是越小越好——每压缩一次都会改写窗口起点，
+#: 使历史中段变化、该点之后的前缀缓存全部作废（provider 按完整前缀单元匹配）。
+#: 因此默认给得较宽（100 条）：常规任务全程不触发压缩 → 前缀纯追加，
+#: 缓存命中率随轮次单调升高；只有长任务才付出周期性的压缩代价。
+#: 想省上下文可调小（如 16），代价是压缩更频繁、缓存命中更低。
 
 _PLACEHOLDER_HINT = "<在此填入"
 

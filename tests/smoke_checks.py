@@ -161,8 +161,12 @@ def check_context_windowing() -> list[str]:
         failures.append("历史摘要未生成/未放在消息尾部（应并入最后一条 user）")
     if "历史摘要" in _msgs[0]["content"]:
         failures.append("历史摘要不应在 system 中（放在中间破坏缓存前缀）")
-    if len(_msgs) > 1 + 1 + 4 + 1:  # system + 任务锚点 + 最近 4 条 + 当前指令
-        failures.append(f"上下文窗口化未限制发送条数: {len(_msgs)}")
+    # system + 任务锚点 + 窗口原文 + 当前指令。
+    # 窗口上限是**有效预算**（cap 小于下限时会被抬到 effective_budget），
+    # 且压缩是事后触发的，故再留 1 条余量。
+    _cap = 1 + 1 + _c.effective_budget + 1 + 1
+    if len(_msgs) > _cap:
+        failures.append(f"上下文窗口化未限制发送条数: {len(_msgs)}（上限 {_cap}）")
     if len(_c.messages) != 40:
         failures.append("窗口化不应改动全量账本")
     # P0 验收：同阶段内连续调用（如 ACT 工具循环）system 前缀必须稳定，
@@ -180,6 +184,111 @@ def check_context_windowing() -> list[str]:
         failures.append("阶段标记不在尾部 user（应在消息尾部）")
     if _s3[0]["content"].startswith("# 当前阶段"):
         failures.append("system 不应包含阶段标记")
+    return failures
+
+
+def check_cache_prefix() -> list[str]:
+    """缓存前缀稳定性：**连续组装之间，历史原文只能追加、下沉，不能被改写。**
+
+    provider 的前缀缓存（DeepSeek 自动硬盘缓存 / Kimi context caching）要求完整匹配
+    到某个缓存前缀单元，前缀中任何一处变化都会让其后的内容全部作废。老实现每次调用
+    都按「最近 N 条」重算窗口，窗口一滑动就在历史**中段**插入/删除，命中率因此长期
+    只有 ~15%。本断言锁死新契约：
+
+    - 摘要边界 `_digest_upto` 单调不减（压缩是单向的）；
+    - 上一次窗口里的每条原文，本次要么**原地保留**（落在重叠区且逐字节相同），
+      要么被**整段下沉**进摘要（窗口右移），绝不能被别的内容顶替；
+    - 账本不变时重复组装，结果必须逐条完全相同。
+
+    实现要点：不能拿上一次「组装结果」去比——那条历史在两次组装之间又增长过，
+    会把新追加的消息误判成改写。必须像下面这样，每次组装后立刻对**当时的**账本切片，
+    并在下一次比较时用「当时的**账本**」而不是当时的窗口做对齐。
+    """
+    failures: list[str] = []
+
+    def snapshot():
+        """记录当前压缩态、发给模型的窗口切片、以及该切片所在的**账本副本**。
+
+        账本必须 copy：ctx.messages 是同一个 list 对象，后续 add_user 会让它继续变长，
+        留着引用就等于拿「未来」的账本去对齐「过去」的下标。
+        """
+        msgs = list(ctx.messages)
+        wins = [*msgs[:1], *msgs[ctx._digest_upto:]]
+        return ctx._digest_upto, wins, msgs
+
+    ctx = SessionContext(max_context_messages=4)
+    for i in range(30):
+        ctx.add_user(f"u{i}")
+        ctx.add_assistant(f"a{i}")
+
+    act = Action(name="act", skill_body="阶段正文")
+    prev = ctx.build_step_messages(act, "执行步骤")
+    pupto, pwins, pmsgs = snapshot()
+    compressions = 0
+
+    for i in range(40):
+        ctx.add_user(f"新增 {i}")      # 纯追加：模拟循环每步新增历史
+        cur = ctx.build_step_messages(act, "执行步骤")
+        cupto, cwins, cmsgs = snapshot()
+
+        # system 必须逐字节稳定（五阶段共享同一缓存前缀）
+        if cur[0]["content"] != prev[0]["content"]:
+            failures.append("system 前缀发生变化（缓存前缀断裂）")
+        # 首条任务锚点不可被替换
+        if cur[1].get("content") != prev[1].get("content"):
+            failures.append("首条任务锚点被改写（缓存前缀断裂）")
+
+        # 1) 摘要边界单调不减
+        if cupto < pupto:
+            failures.append(f"摘要边界回退: {pupto} → {cupto}（压缩边界必须单调）")
+
+        # 窗口首条是**固定任务锚点**，压缩后会占住新窗口第 0 位、把旧锚点挤走，
+        # 所以比较必须剥掉锚点；锚点下面单独断言它没被替换。
+        pk, ck = pwins[1:], cwins[1:]      # 剥掉锚点后的窗口原文
+        off = len(pk) - len(ck)
+
+        if off < 0:
+            # 窗口增长：上一次的原文必须原样成为本次原文的前缀（纯追加）
+            if ck[:len(pk)] != pk:
+                failures.append("账本增长时窗口历史被改写（应只追加，不回改）")
+        elif off == 0:
+            # 条数不变：内容必须逐条一致，不得整体替换
+            if ck != pk:
+                failures.append("窗口条数不变但原文被整体替换（历史中段重写，前缀缓存失效）")
+        else:
+            # 压缩：本次每条都必须是「本次账本」里那条原文，不被别的内容顶替
+            # （cupto 就是本次窗口在账本里的起点，逐条对齐即可）
+            for k, msg in enumerate(ck):
+                if msg != cmsgs[cupto + k]:
+                    failures.append(
+                        f"窗口原文被顶替（i={i} k={k}，摘要边界 {pupto}→{cupto}，"
+                        f"偏移={off}）—— 历史中段被改写，前缀缓存从该点起全部作废"
+                    )
+                    break
+            compressions += 1
+
+        # 窗口条数上界：正常 <= 预算；触发是事后判定的，故允许 1 条余量
+        if not (1 <= len(cwins) <= ctx.effective_budget + 1):
+            failures.append(
+                f"窗口条数越界: {len(cwins)}（有效预算={ctx.effective_budget}，上限+1）"
+            )
+
+        # 3) 账本不变时重复组装：结果必须逐条一致
+        if ctx.build_step_messages(act, "执行步骤") != cur:
+            failures.append("账本未变但组装结果不同（摘要被无谓重算，前缀缓存失效）")
+
+        prev = cur
+        pupto, pwins, pmsgs = cupto, cwins, cmsgs
+
+    if compressions == 0:
+        failures.append("40 步内压缩从未触发，本断言未覆盖压缩路径")
+    if not ctx._digest_text:
+        failures.append("压缩后摘要为空")
+    # 摘要落在最后一条 user 内（放中段会破坏缓存前缀）
+    if ctx._digest_text and "历史摘要" not in prev[-1]["content"]:
+        failures.append("历史摘要不在尾部 user 内")
+    if not (0 < ctx._digest_upto < len(ctx.messages)):
+        failures.append(f"摘要边界越界: _digest_upto={ctx._digest_upto}")
     return failures
 
 
@@ -514,7 +623,10 @@ def check_work_dir(base_dir: Path) -> list[str]:
 def check_tool_window() -> list[str]:
     """窗口化不得切出孤儿 tool 消息（否则 API 直接 400）。
 
-    构造：assistant(tool_calls) 落在窗口外、紧跟的 role=tool 落在窗口内。
+    两处都要盯住：
+    - 落到窗口外、已被摘要的 assistant(tool_calls)+tool 对：整对一起离开窗口，
+      绝不留下孤零零的 tool 回执（老实现硬取 history[-keep:] 就会切出孤儿）；
+    - 落在窗口**内**的工具对：宿主 assistant 与回执必须同时在场、顺序正确。
     """
     from react.action import Action
 
@@ -525,15 +637,21 @@ def check_tool_window() -> list[str]:
         skill_body = "skill"
 
     ctx = SessionContext(max_rounds=5, max_context_messages=16)
-    # 关键构造：让 assistant(tool_calls) 落在窗口边界之外，而它的 tool 回执正好是窗口首条。
-    # 窗口起点 = len - keep = 18 - 16 = 2，故把 tool 放在索引 2、宿主 assistant 放在索引 1。
+    # 索引 1-2：工具对切在窗口外（压缩后整对进摘要，绝不能只剩回执）。
     ctx.add_user("任务")                                   # 0（任务锚点，始终保留）
     ctx.add_assistant("", tool_calls=[{"id": "call_1", "type": "function",
                                        "function": {"name": "decide_next_step",
-                                                    "arguments": "{}"}}])   # 1 会被切掉
-    ctx.add_tool("call_1", "ok")                            # 2 窗口首条 → 若不管就是孤儿
-    for i in range(15):                                     # 3..17 填满窗口
+                                                    "arguments": "{}"}}])   # 1
+    ctx.add_tool("call_1", "ok")                            # 2
+    for i in range(8):                                      # 3..10 填充
         ctx.add_user(f"填充 {i}")
+    # 索引 11-12：工具对完整落在窗口内，用来验证「配对保留」这条正常路径。
+    ctx.add_assistant("读取文件", tool_calls=[{"id": "call_2", "type": "function",
+                                               "function": {"name": "read",
+                                                            "arguments": '{"path":"a.py"}'}}])  # 11
+    ctx.add_tool("call_2", "tool-out")                      # 12
+    for i in range(5):                                      # 13..17
+        ctx.add_user(f"填充后 {i}")
 
     msgs = ctx.build_step_messages(_Act(), "执行")
     body = msgs[1:]  # 去掉 system
@@ -547,7 +665,10 @@ def check_tool_window() -> list[str]:
                     "窗口化把宿主 assistant 切掉了"
                 )
 
-    # 正常情况：assistant(tool_calls) 与其 tool 回执必须同时存在
+    # 窗口内的工具对必须完整保留：宿主 assistant 与它的回执都在
+    ids_in_body = {m.get("tool_call_id") for m in body if m.get("role") == "tool"}
+    if "call_2" not in ids_in_body:
+        failures.append("窗口内的工具回执被丢弃（本应在窗口内完整保留）")
     if not any(m.get("tool_calls") for m in body):
         failures.append("窗口内缺少 assistant(tool_calls)，但 tool 回执却在——顺序错了")
     return failures
@@ -600,7 +721,7 @@ def check_live(result, context) -> tuple[list[str], str]:
              f"role=tool 回执={len(tool_msgs)}")
     return failures, stats
 
-def check_native_tools() -> list[str]:
+def check_native_tools(base_dir: Path) -> list[str]:
     """原生文件工具（对标 Claude Code）：run_tool 各工具 + read 默认上限 +
     越界拒绝 + ACT 原生工具循环（工具调用→执行→回写→产物定型）。"""
     failures: list[str] = []
@@ -669,7 +790,7 @@ def check_native_tools() -> list[str]:
 
     render = RichRenderer(None, show_reasoning=False)
     registry = ActionRegistry()
-    registry.load(Path(r"G:\react-agent\skills"))
+    registry.load(base_dir / "skills")
     model = MockClient(emit_file_tools=True)
     recorder = _RecordingExecutor()
     ctx = SessionContext(max_rounds=5, max_context_messages=12)
@@ -726,7 +847,7 @@ def check_native_tools() -> list[str]:
     # 故意不写 x1 的回执（模拟回执缺失）
     bad.add_assistant("[RESULT] 后续产物")
     registry2 = AR2()
-    registry2.load(Path(r"G:\react-agent\skills"))
+    registry2.load(base_dir / "skills")
     act2 = registry2.get("act")
     msgs = bad.build_step_messages(act2, "当前步骤指令")
     body = "\n".join(m.get("content") or "" for m in msgs)
@@ -734,7 +855,7 @@ def check_native_tools() -> list[str]:
         failures.append("缺回执的 assistant(tool_calls) 未被清理（仍会 400）")
     return failures
 
-def check_token_stats() -> list[str]:
+def check_token_stats(base_dir: Path) -> list[str]:
     """会话级 token 统计：loop 记录、usage 含 cached、持久化与汇总。"""
     failures: list[str] = []
     import tempfile
@@ -749,7 +870,7 @@ def check_token_stats() -> list[str]:
 
     render = RichRenderer(None, show_reasoning=False)
     registry = ActionRegistry()
-    registry.load(Path(r"G:\react-agent\skills"))
+    registry.load(base_dir / "skills")
     model = MockClient(emit_file_tools=True)
     recorder = _RecordingExecutor()
     ctx = SessionContext(max_rounds=5, max_context_messages=12)
