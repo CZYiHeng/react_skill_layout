@@ -329,7 +329,7 @@ echo    start.bat build    仅构建前端产物 web\dist
 echo    start.bat stop     停止后台服务
 echo    start.bat help     显示本帮助
 echo.
-echo  当前配置档案：%CFG%（用 REACT_AGENT_CONFIG 切换，默认 config.deepseek.json）
+echo  当前配置文件：%CFG%（多家接入用 config.json 里的 active_provider 切换）
 echo.
 goto :done
 
