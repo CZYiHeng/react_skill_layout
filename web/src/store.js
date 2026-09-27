@@ -7,6 +7,8 @@ export const initialState = {
   sessionId: null,
   config: null, // { model, max_rounds, shell, file_write, sandbox, gate_mode }
   binds: null, // { think: bool, plan: bool, ... }
+  variants: null, // { think: ['default', ...], ... } 每槽位可选 skill 变体
+  activeVariants: null, // { think: 'default', ... } 每槽位当前生效的变体
   status: 'idle', // idle | running | done | error | aborted
   items: [], // 已定稿条目
   live: null, // { action, text } 正在流式输出
@@ -37,6 +39,8 @@ export function reducer(state, action) {
         sessionId: action.sessionId,
         config: action.config || null,
         binds: action.binds || null,
+        variants: action.variants || null,
+        activeVariants: action.skill_variants || null,
         gateMode: mode,
         workDir: (action.config && action.config.work_dir) || state.workDir,
         allowOutside: action.config
@@ -85,6 +89,17 @@ export function reducer(state, action) {
 
     case 'gate_mode':
       return { ...state, gateMode: action.gateMode }
+
+    case 'variant_local': {
+      // 变体选择已写回配置；本地先更新，避免下拉等到下次建会话才反映出来
+      const av = { ...(state.activeVariants || {}) }
+      av[action.slot] = action.variant
+      const cfg = state.config
+        ? { ...state.config,
+            skill_variants: { ...(state.config.skill_variants || {}), [action.slot]: action.variant } }
+        : state.config
+      return { ...state, activeVariants: av, config: cfg }
+    }
 
     case 'work_dir':
       return { ...state, workDir: action.workDir }

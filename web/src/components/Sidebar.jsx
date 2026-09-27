@@ -21,7 +21,7 @@ const STATUS_TEXT = {
 export default function Sidebar({
   config, binds, status, gateMode, onGateMode, workDir, onWorkDir,
   allowOutside, onAllowOutside, onPause, onAbort, onReset, onSave, onSettings,
-  totalTokens, onSwitchModel, onReview,
+  totalTokens, onSwitchModel, onReview, variants, activeVariants, onVariant,
 }) {
   const running = status === 'running'
   const shellOn = !!config?.shell
@@ -96,16 +96,37 @@ export default function Sidebar({
         <div className="group-label">槽位绑定</div>
         <div className="slot-row">
           {binds
-            ? SLOTS.map((s) => (
-                <span
-                  key={s.key}
-                  className={binds[s.key] ? 'slot on' : 'slot'}
-                  style={binds[s.key] ? { color: s.color } : undefined}
-                >
-                  <span className="slot-dot" />
-                  {s.key}
-                </span>
-              ))
+            ? SLOTS.map((s) => {
+                const opts = (variants || {})[s.key] || []
+                const cur = (activeVariants || {})[s.key] || 'default'
+                // 只有该槽位真有多个 skill 时才给下拉，避免每格都挂一个没用的控件
+                if (opts.length > 1 && onVariant) {
+                  return (
+                    <select
+                      key={s.key}
+                      className={binds[s.key] ? 'slot on' : 'slot'}
+                      value={cur}
+                      title={`${s.key}：选择生效的 skill`}
+                      onChange={(e) => onVariant(s.key, e.target.value)}
+                    >
+                      {opts.map((v) => (
+                        <option key={v} value={v}>{v === 'default' ? s.key : `${s.key}:${v}`}</option>
+                      ))}
+                    </select>
+                  )
+                }
+                return (
+                  <span
+                    key={s.key}
+                    className={binds[s.key] ? 'slot on' : 'slot'}
+                    style={binds[s.key] ? { color: s.color } : undefined}
+                    title={opts.length === 1 ? `${s.key}：${cur}` : undefined}
+                  >
+                    <span className="slot-dot" />
+                    {cur === 'default' ? s.key : `${s.key}:${cur}`}
+                  </span>
+                )
+              })
             : <span className="slot">— 未加载 —</span>}
         </div>
         <div className="exec-row">

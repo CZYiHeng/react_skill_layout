@@ -114,8 +114,9 @@ export default function App() {
         .then(async (data) => {
           if (cancelled) return
           dispatch({ type: 'session', sessionId: data.session_id,
-                     config: api.normalizeConfig(data.config), binds: data.binds })
-          // 补拉全量配置（含 profiles/active_profile），保证模型档案下拉完整
+                     config: api.normalizeConfig(data.config), binds: data.binds,
+                     variants: data.variants, skill_variants: data.skill_variants })
+          // 补拉全量配置（含 providers/active_provider），保证模型下拉与变体选择完整
           const d = await api.getConfig()
           if (cancelled) return
           dispatch({ type: 'config_update', config: api.normalizeConfig(d.config || {}) })
@@ -419,6 +420,21 @@ export default function App() {
       <Sidebar
         config={state.config}
         binds={state.binds}
+        variants={state.variants}
+        activeVariants={state.activeVariants}
+        onVariant={async (slot, variant) => {
+          // 变体选择是启动期装配（build_registry 里生效），没有运行时可切换的接口，
+          // 所以直接写配置：下个任务建 registry 时生效，与"改配置后重启"一致。
+          const next = { ...(state.config?.skill_variants || {}), [slot]: variant }
+          try {
+            await api.saveConfig({ skill_variants: next })
+            const d = await api.getConfig()
+            dispatch({ type: 'config_update', config: api.normalizeConfig(d.config || {}) })
+            dispatch({ type: 'variant_local', slot, variant })
+          } catch (e) {
+            dispatch({ type: 'error', message: `切换 ${slot} 变体失败：${e.message}` })
+          }
+        }}
         status={state.status}
         gateMode={state.gateMode}
         onGateMode={(mode) => dispatch({ type: 'gate_mode', gateMode: mode })}

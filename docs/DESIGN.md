@@ -79,6 +79,19 @@ THINK / PLAN / ACT / OBSERVE / VERIFY 是 5 个**槽位**。启动时扫描 `ski
 - 存在 → 该动作的**系统提示** = SKILL.md frontmatter + 正文
 - 不存在 → 使用代码内置的默认系统提示
 
+**槽位内可放多个 skill（变体）**——这是"把槽位内部的 skill 抽出来"的机制：
+
+```
+skills/act/SKILL.md              ← 默认变体（default），行为与从前完全一致
+skills/act/strict-code/SKILL.md  ← 额外 skill，变体名 = 子目录名
+```
+
+- 选用方式：配置 `"skill_variants": {"act": "strict-code"}`；**只影响该槽位**，五槽位独立。
+- 每步只注入当前槽位那一份正文 → **加变体不增加单次请求 token**。
+- 未知变体名 → 降级为默认 + 告警（不阻断启动，与 `gate_mode` 非法值的处理一致）。
+- 子目录缺 `SKILL.md`、或名为保留名 `default` → 告警并跳过。
+- 只读 `<槽位>/<变体名>/SKILL.md`；同目录下的脚本/参考资料**不加载**（见 §9 后续方向）。
+
 用户对绑定的控制方式：
 
 ```
@@ -731,7 +744,7 @@ c                             ← 用户确认继续
 1. **显式文本 ReAct 已被原生 function calling 取代**（LangChain `create_agent`、smolagents、OpenAI Agents SDK 均不再用文本协议）。坚持显式协议是差异化选择，代价是解析脆弱 + token 开销，由 max_rounds 与强制重规划护栏对冲。
 2. **最接近的产品先例：Autohand Code CLI**（agentskills.io 客户列表），明确采用 "ReAct (Reason + Act) pattern … with your approval"，与本设计"显式协议 + 人工在环"思路高度重合，可参考其交互设计。
 3. **本设计的创新组合点**："认知阶段作为槽位 × 目录约定绑定 skill"（阶段即插槽）未查到先例。经典 ReAct 动作空间开放，本设计为固定状态机 + 可插拔阶段提示。
-4. **启示**：可借鉴 Agent Skills 标准的 progressive disclosure（启动只加载 description，触发时才读全文）作为后续优化方向；Fabric（44k★）证明目录约定 + 单发执行的极简路线存在，但无推理循环，与本设计定位不同。
+4. **启示**：Agent Skills 标准的 progressive disclosure（启动只加载 description，触发时才读全文）**本设计已部分采纳**：槽位内支持多变体 + 按配置**选择性加载**（只注入选中的那一份）。尚未做的是"启动只读 description、触发时才读全文"——那需要引入"何时读、读多少"的新预算问题，与 `max_context_tokens` 协同设计，列为后续方向；Fabric（44k★）证明目录约定 + 单发执行的极简路线存在，但无推理循环，与本设计定位不同。
 
 ---
 

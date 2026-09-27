@@ -217,6 +217,12 @@ uv run python tools/cache_probe.py    # 离线缓存探针：改造前/后逐字
   阈值偏大（该下调）：每次调用都要重发全部历史，单次上限越大，二次增长的代价越高。
   默认 100k 就是被实测修正过的：一度调到 200k，结果长任务单次 prompt 涨到 199,371、
   10 轮累计 10.87M。窗口更小的端点按「窗口 × 0.6」下调（128k 窗口 → 约 76000）。
+- **槽位内可放多个 skill（变体）**：`skills/<槽位>/SKILL.md` 是该槽位默认行为，
+  `skills/<槽位>/<变体名>/SKILL.md` 是可独立抽出的额外 skill；用配置
+  `"skill_variants": {"act": "strict-code"}` 选用其一，**只影响该槽位**，五个槽位各自独立。
+  每步只注入当前槽位那一份，所以加变体不增加单次请求 token。
+  未知变体名会降级为默认并告警（不阻断启动）。注意 `--bind` 是**整目录替换**，
+  会连带清掉该槽位下的变体。
 - **Windows 沙箱不阻断网络**，且子进程仍以当前用户身份运行（详见
   [docs/DESIGN.md](docs/DESIGN.md) 安全模型一节）。
 
@@ -239,8 +245,9 @@ react-agent/
 │   ├── display.py           # 产物展示模板
 │   ├── webapi.py            # Web API（SSE + REST）
 │   └── win32_sandbox.py     # Windows 沙箱（纯 ctypes）
-├── skills/                  # 5 槽位默认 skill
-├── skills_code/             # 写代码专用 skill 档案
+├── skills/                  # 5 槽位默认 skill（槽位内可再放变体子目录）
+│   └── act/SKILL.md         #   默认；act/<变体名>/SKILL.md = 可抽出的额外 skill
+├── skills_code/             # 写代码专用 skill 档案（同上结构）
 ├── web/                     # React + Vite 前端
 ├── tests/                   # 冒烟测试
 ├── tools/                   # 离线工具（cache_probe.py 缓存前缀 A/B 探针）
