@@ -98,6 +98,9 @@ def _provided_stages(root: Path) -> tuple[str, ...]:
 def probe(root: Path, name: str = "", source: str = "") -> Capability:
     """把一个目录读成一个能力（不校验存在性，调用方负责）。"""
     data, warns = load_manifest(root)
+    # 名字的优先级：manifest.name > 显式传入的 name > 目录名。
+    # `default` 能力位于 `<base>/skills`，目录名是 "skills"，但它的能力名必须叫
+    # default（否则 --check 与报错里会出现一个用户从未配置过的名字）。
     return Capability(
         name=str(data.get("name") or name or root.name),
         root=root,
@@ -221,7 +224,6 @@ def resolve_capability(cfg: dict, base_dir: Path, ref: str | Path | None = None,
         p = Path(text)
         if p.is_dir():
             return probe(p, source=str(p))
-
     caps, warns = discover(cfg, base_dir, current_version)
     if not text:
         # 配置里指定了生效能力时用它；否则 default
@@ -234,11 +236,15 @@ def resolve_capability(cfg: dict, base_dir: Path, ref: str | Path | None = None,
             return cap
 
     if text not in caps:
-        # 平级目录回退：`<base>/<名字>`。让历史布局（skills_code 这类就地目录）
-        # 不必写配置别名就能按名字解析，改名时才需要 capability_aliases。
-        sibling = base_dir / text
-        if sibling.is_dir() and _provided_stages(sibling):
-            return probe(sibling, name=text, source=str(sibling))
+        # 平级目录回退：`<base>/<名字>` 或 `capabilities/<名字>`。
+        # 让"目录名"也能当引用用——历史布局（`skills_code` 这类就地目录）与
+        # "能力名 ≠ 目录名"的情形都不必写配置别名即可解析。
+        # 注意：别名里显式写了映射时以别名为准（用户意图优先）。
+        aliased = text in (cfg.get("capability_aliases") or {})
+        if not aliased:
+            for cand in (base_dir / text, base_dir / CAPABILITIES_DIR / text):
+                if cand.is_dir() and _provided_stages(cand):
+                    return probe(cand, name=text, source=str(cand))
 
     if text in caps:
         cap = caps[text]

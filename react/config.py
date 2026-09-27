@@ -72,7 +72,10 @@ DEFAULTS: dict = {
     #: 额外能力根目录：每个条目既可以是"一个能力目录"，也可以是"装多个能力的容器"。
     "capability_paths": [],
     #: 能力别名：`{"旧名": "新名"}`，用于改名后仍让旧配置/旧启动脚本可用。
-    "capability_aliases": {},
+    #: 内置一条 `skills_code → coding`：该目录已迁入 `capabilities/coding/`，
+    #: 用户现存的启动脚本（`REACT_AGENT_SKILLS_DIR=...\skills_code`）与旧文档
+    #: 不该因为一次整理就失效；用户可在自己的配置里覆盖或删除这条。
+    "capability_aliases": {"skills_code": "coding"},
     #: 槽位内 skill 变体选择：`{"<槽位>": "<变体名>"}`，缺省空 = 五个槽位全用默认。
     #: 变体 = `<skills_root>/<槽位>/<变体名>/SKILL.md`（默认变体是槽位根下的 SKILL.md）。
     #: 未知变体名会被降级为默认并告警，不阻断启动。

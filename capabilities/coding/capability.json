@@ -1,0 +1,8 @@
+{
+  "name": "coding",
+  "version": "1.0.0",
+  "description": "写代码能力：8 字段函数头 / 7 规则头-实现一致性 / req-to-code 增量骨架 / solution-review 三维度 / flow-tracer。原目录名 skills_code，已由 capability_aliases 兼容。",
+  "requires": {
+    "react_agent": ">=0.1.0"
+  }
+}

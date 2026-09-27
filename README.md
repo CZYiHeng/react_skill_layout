@@ -120,12 +120,14 @@ skills/verify/SKILL.md     ← VERIFY：怎么终检（pass/fail）
 ```
 
 - 槽位目录为空时回退内置默认提示词。
-- **默认绑定的是仓库自带的 `skills/`**（通用推理/分析档）；`skills_code/` 是**并列的另一套**，
-  **不设 `--skills-dir` 就不会被加载**——这点最容易误解。
+- **默认用的是仓库自带的 `skills/`**（通用推理/分析档，即 `default` 能力）。
+- **能力**是写齐五阶段的自包含包，放在 `capabilities/<名字>/`：例如 `capabilities/coding/`
+  （8 字段函数头、req-to-code 增量骨架、solution-review 三维度等）。
+  选中方式：`--skills-dir capabilities/coding`、`--capability coding`，或配置 `active_capability`。
+  未提供 SKILL.md 的阶段会回退内置默认——`--check` 会标出每个槽位是谁提供的。
 - 把 `~/.claude/skills/` 里的 skill 绑到槽位：`python main.py --bind plan dev-flow`，或直接复制目录到 `skills/plan/`。
-- 仓库附带一套**写代码专用档案** `skills_code/`（8 字段函数头、req-to-code 增量骨架、solution-review 三维度等），用 `--skills-dir skills_code` 或 `REACT_AGENT_SKILLS_DIR` 切换——框架绑定机制不变，换的只是"写代码行为"。
-- 查当前到底绑了什么：`python main.py --check`（打印 skill 根目录与五个槽位各自的变体）。
-- 槽位内还能放多个 skill（变体）：`skills/<槽位>/<变体名>/SKILL.md` + 配置 `skill_variants` 选用，只影响该槽位。
+- 查当前到底用了什么：`python main.py --check`（打印能力、来源与五个槽位各自的变体）。
+- 槽位内还能放多个 skill（变体）：`<能力>/<槽位>/<变体名>/SKILL.md` + 配置 `skill_variants` 选用，只影响该槽位。
 
 ## Web 对话前端
 
@@ -246,6 +248,7 @@ react-agent/
 │   ├── loop.py              # ReActLoop 五阶段状态机
 │   ├── model.py             # OpenAI 兼容客户端 + Mock
 │   ├── action.py            # 5 槽位注册 + SKILL.md 解析
+│   ├── capability.py        # 能力发现与解析（唯一实现）
 │   ├── context.py           # 消息账本 / 计划状态 / 窗口化
 │   ├── executor.py          # shell/write 安全执行器
 │   ├── service.py           # 服务层：Renderer×3 / Control×3
@@ -253,9 +256,10 @@ react-agent/
 │   ├── display.py           # 产物展示模板
 │   ├── webapi.py            # Web API（SSE + REST）
 │   └── win32_sandbox.py     # Windows 沙箱（纯 ctypes）
-├── skills/                  # 5 槽位默认 skill（槽位内可再放变体子目录）
+├── skills/                  # default 能力：5 槽位默认 skill（槽位内可再放变体子目录）
 │   └── act/SKILL.md         #   默认；act/<变体名>/SKILL.md = 可抽出的额外 skill
-├── skills_code/             # 写代码专用 skill 档案（同上结构）
+├── capabilities/            # 能力容器：每个子目录 = 一个自包含能力，可整体搬走
+│   └── coding/              #   写代码能力（五阶段 + capability.json）
 ├── web/                     # React + Vite 前端
 ├── tests/                   # 冒烟测试
 ├── tools/                   # 离线工具（cache_probe.py 缓存前缀 A/B 探针）

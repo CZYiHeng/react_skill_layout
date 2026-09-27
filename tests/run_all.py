@@ -51,7 +51,9 @@ def run_smoke(live: bool, skills_dir: Path, base_dir: Path,
     render = RichRenderer(console, show_reasoning=show_reasoning)
 
     registry = ActionRegistry()
-    registry.load(skills_dir)
+    # skills_dir=None 表示"按能力解析"（--skills-dir 未指定）。冒烟测试要验证的是
+    # 仓库自带的 default 能力，故回落 <base_dir>/skills，行为与从前一致。
+    registry.load(skills_dir or (base_dir / "skills"))
     for w in registry.warnings:
         render.warn(w)
 

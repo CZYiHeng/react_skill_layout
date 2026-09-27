@@ -63,12 +63,12 @@
 | 闸门 | `plan` | 计划出来确认一次方向，之后自动跑到缺陷或验收 |
 | 目录 | `demo_dedupe` | 关在项目内子目录，不污染仓库根 |
 | 项目外 | 不勾 | 本例不需要 |
-| skills | 默认 | 先看清纯流程；想看 8 字段函数头再切 `skills_code` |
+| skills | 默认（default 能力） | 先看清纯流程；想看 8 字段函数头再切 `coding` 能力 |
 
-切 `skills_code` 的启动方式（想对比两种风格时）：
+切 `coding` 能力的启动方式（想对比两种风格时）：
 
 ```bat
-set REACT_AGENT_SKILLS_DIR=G:\react-agent\skills_code
+set REACT_AGENT_SKILLS_DIR=G:\react-agent\capabilities\coding
 start.bat
 ```
 

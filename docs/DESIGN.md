@@ -2,7 +2,7 @@
 
 > 版本：v1.7（已实现）  
 > 日期：2026-09-16  
-> 状态：核心循环 + 原生工具调用 + LocalExecutor + 上下文窗口化 均已落地；新增 skills_code 写代码专用档案（§3.9）；新增 shell OS 级沙箱（§4.1）；新增 service 层与 Web 对话前端（§3.10）
+> 状态：核心循环 + 原生工具调用 + LocalExecutor + 上下文窗口化 均已落地；新增 coding 写代码能力（§3.9，原 skills_code）；新增 shell OS 级沙箱（§4.1）；新增 service 层与 Web 对话前端（§3.10）
 
 ---
 
@@ -14,7 +14,7 @@
 | v1.2 | THINK 驱动状态机完整落地、计划修订保留已完成前缀 | — |
 | v1.3 | OBSERVE 三值分流 + VERIFY 不通过回炉 + 验收数据流 | — |
 | **v1.4** | **① 解析失败安全默认（ESCALATE/不通过）；混合控制信号通道（原生工具调用为主 + 文本兜底）；③ 上下文窗口化；④ ACT 经 LocalExecutor 真实执行（默认关闭）；② 明文密钥治理（env 覆盖 + .gitignore）；⑧ 工具调用回写 `role=tool`；⑥ 判定文本兜底同义词（修"未通过"误判为通过的坑）；⑦ ASK 独立轮次上限（防死循环）** | ① ② ③ ④ ⑤ ⑥ ⑦ ⑧ ⑩ |
-| **v1.5** | **新增 `skills_code/` 写代码专用档案：把 `G:\skill` 的 8 字段头 / 7 规则 / req-to-code / solution-review / flow-tracer / visual-digest 方法论适配进五槽位协议；不改 `load()` 与 `G:\skill`；新增 `两个 CLI 便捷环境变量（`REACT_AGENT_SKILLS_DIR` / `REACT_AGENT_CONFIG`）** | 写代码 agent 需求 |
+| **v1.5** | **新增写代码能力（原 `skills_code/`，现 `capabilities/coding/`）：把 `G:\skill` 的 8 字段头 / 7 规则 / req-to-code / solution-review / flow-tracer / visual-digest 方法论适配进五槽位协议；不改 `load()` 与 `G:\skill`；新增 `两个 CLI 便捷环境变量（`REACT_AGENT_SKILLS_DIR` / `REACT_AGENT_CONFIG`）** | 写代码 agent 需求 |
 | **v1.6** | **shell 执行接入 OS 级沙箱（仅 Windows）：`react/win32_sandbox.py` 用受限令牌（剥特权）+ 作业对象（kill-on-close / 禁 breakaway / 进程数上限 / 内存上限）+ 可选低完整性级别，把 agent 起的自家命令进程关进内核隔离；`sandbox_shell` 配置开关，默认关** | 市面 agent 安全范式调研后落地 |
 | **v1.7** | **① service 层（`react/service.py`）：`Renderer` 协议补全并归位、新增 `on_token` 流式钩子（修 loop.py 从未透传 on_token 的死代码）、`AgentEvent`/`EventRenderer`/`NullRenderer`/`ControlChannel`/`ReactService`，让 CLI/MCP/Web 三方共用同一套驱动；② 配置统一到 `react/config.py`（`ConfigError`，不再 SystemExit）；③ 断言迁出 `cmd_smoke`（221 行）进 `tests/`；④ 新增 Web API（`react/webapi.py`，starlette + SSE）与 React+Vite 前端（`web/`）** | 前端对话需求 + 结构优化 |
 
@@ -136,7 +136,8 @@ react-agent/
 │   ├── act/SKILL.md
 │   ├── observe/SKILL.md
 │   └── verify/SKILL.md
-├── skills_code/         # ← 写代码专用档案（适配器式，不改 load()/G:\skill）
+├── capabilities/        # ← 能力容器：每个子目录一个自包含能力，可整体搬走
+│   └── coding/          #     写代码能力（原 skills_code/，适配器式，不改 load()）
 │   ├── think/SKILL.md   #   CREATE/MODIFY 自检（ROLE 字段为信号）+ 编码决策
 │   ├── plan/SKILL.md    #   需求分析 + DEPENDS_ON DAG + 8 字段头规划 + 增量骨架
 │   ├── act/SKILL.md     #   8 字段头 + 7 规则一致 + [EXEC: write] 落盘
@@ -346,15 +347,15 @@ ACT 产物到达渲染层时，先经 `react/display.py` 按内容类型选择�
 
 **ASK 轮次上限（问题⑦）**：ASK 不计入 `max_rounds` 预算（对话不耗轮数），但若模型反复提问永不收敛，会绕过上限死循环。v1.4 新增独立计数 `_ask_count`，超过 `_MAX_ASK_TURNS`（默认 6）即 ESCALATE 移交人工。
 
-### 3.9 写代码专用档案（skills_code/，v1.5 新增）
+### 3.9 写代码能力（capabilities/coding/，原 skills_code/）
 
-通用 `skills/` 适合"方案/分析"类任务，而"写代码"需要更强的方法论约束（结构化头、头-实现一致性、增量骨架、方案评审、数据流概览）。为此新增一套**适配器式档案** `skills_code/`，把 `G:\skill` 仓库的写码方法论融进五槽位协议——**不动 `ActionRegistry.load()`（目录名=槽位名、每槽位单 SKILL.md 的硬约束原样保留），也不改 `G:\skill` 源仓库**，仅用目录约定换一套行为。
+通用 `skills/` 适合"方案/分析"类任务，而"写代码"需要更强的方法论约束（结构化头、头-实现一致性、增量骨架、方案评审、数据流概览）。为此新增一套**适配器式能力** `capabilities/coding/`（原名 `skills_code/`），把 `G:\skill` 仓库的写码方法论融进五槽位协议——**不动 `ActionRegistry.load()`（目录名=槽位名、每槽位单 SKILL.md 的硬约束原样保留），也不改 `G:\skill` 源仓库**，仅用目录约定换一套行为。
 
 **使用方式**：
 
 ```bash
-python main.py --skills-dir G:\react-agent\skills_code          # REPL（文件写入需在 config 开启）
-python main.py --smoke    --skills-dir G:\react-agent\skills_code # 静态回归（零 API）
+python main.py --capability coding                                # REPL（文件写入需在 config 开启）
+python main.py --smoke    --skills-dir capabilities/coding         # 静态回归（零 API）
 ```
 
 写码场景建议 `enable_file_write: true`、`enable_shell_exec: false`（落文件、不跑 shell）；CLI 便捷环境变量 `REACT_AGENT_SKILLS_DIR` / `REACT_AGENT_CONFIG` 可省去每次传参（见 §5）。

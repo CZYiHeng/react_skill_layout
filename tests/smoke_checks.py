@@ -730,12 +730,26 @@ def check_capability_model(base_dir: Path) -> list[str]:
             failures.append("能力别名未生效")
         if resolve_capability(cfg, base, str(base / "skills_legacy")).name != "skills_legacy":
             failures.append("按目录路径解析未生效")
+        # 目录名也能当引用：`capabilities/<名字>` 与平级 `<base>/<名字>` 都可回退解析
+        if resolve_capability(cfg, base, "capabilities").root != base / "capabilities":
+            pass  # capabilities 本身不是能力，跳过
         if resolve_capability(cfg, base).name != DEFAULT_CAPABILITY:
             failures.append("空 ref 应解析为 default 能力")
         # 配置里的 active_capability 必须真的生效（"" 不得被当成 default 提前返回）
         active = dict(cfg, active_capability="skills_legacy")
         if resolve_capability(active, base).name != "skills_legacy":
             failures.append("配置 active_capability 未生效（可能被空串短路成 default）")
+
+        # 2b) ReactService(skills_dir=None) 必须走能力解析，而不是被当成路径。
+        #     实测踩过：argparse 的 --skills-dir 默认值塞了具体路径，导致用户没指定
+        #     也走"按路径解析"，配置里的 active_capability 与内置别名永远不生效
+        #     （--check 把 default 能力显示成了目录名 skills）。
+        svc_none = ReactService(dict(cfg, active_capability="coding"), base)
+        if svc_none.capability.name != "coding":
+            failures.append(
+                f"skills_dir=None 时应按 active_capability 解析，实际能力 {svc_none.capability.name}")
+        if svc_none.capability.name == "coding" and svc_none.capability.version != "1.0.0":
+            failures.append("能力版本未从 capability.json 读出")
 
         # 5) 未知名 → 报错且列出可用能力（不静默回退 default）
         try:

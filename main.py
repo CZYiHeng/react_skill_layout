@@ -93,14 +93,17 @@ def load_config(path: Path, console: Console, quiet: bool = False) -> dict:
     return loaded.values
 
 
-def cmd_bind(action: str, skill: str, skills_dir: Path, console: Console) -> None:
+def cmd_bind(action: str, skill: str, skills_dir: Path | None, console: Console) -> None:
     if action not in ACTION_NAMES:
         console.print(f"[red]未知动作槽位: {action}[/red]，可选: {', '.join(ACTION_NAMES)}")
         raise SystemExit(1)
+    # --bind 是"把 skill 拷进某个能力的槽位目录"，所以必须有具体目录：
+    # 没指定就落到 default 能力（<base>/skills），与从前一致。
+    target_root = Path(skills_dir) if skills_dir else DEFAULT_SKILLS_DIR
     src = DEFAULT_CLAUDE_SKILLS / skill
     registry = ActionRegistry()
     try:
-        target = registry.bind(action, src, skills_dir)
+        target = registry.bind(action, src, target_root)
     except FileNotFoundError as e:
         console.print(f"[red]绑定失败[/red]：{e}（从 {DEFAULT_CLAUDE_SKILLS} 查找）")
         raise SystemExit(1)
@@ -242,20 +245,27 @@ def cmd_check(console: Console, skills_dir: Path) -> None:
     if n > 1:
         console.print(f"[dim]  共 {n} 个 provider，可用 active_provider 切换[/dim]")
 
-    # 当前绑定了哪套 skill —— 这是最容易误解的一点：不传 --skills-dir 时用的是
-    # `<base>/skills`，仓库里那套 `skills_code/` 并不会被加载。
+    # 当前用的是哪个能力、五个槽位各自由谁提供 —— 这是最容易误解的一点：
+    # 槽位缺 SKILL.md 会**静默回退内置默认**，不说清楚就以为自己的 skill 在生效。
     svc = ReactService(cfg, BASE_DIR, skills_dir)
     registry = svc.build_registry()
-    console.print(f"[dim]  skill 根目录：{svc.skills_dir.name}"
-                  f"（{svc.skills_dir}）[/dim]")
+    cap = svc.capability
+    console.print(f"[dim]  能力：{cap.name}"
+                  + (f" v{cap.version}" if cap.version else "")
+                  + f" · {cap.source}[/dim]")
     parts = []
-    for slot, desc in registry.bind_status():
+    for slot, _desc in registry.bind_status():
+        action = registry.get(slot)
         opts = registry.variants_of(slot)
         extra = [v for v in opts if v != DEFAULT_VARIANT]
-        cur = registry.get(slot).active_variant
-        short = "内置默认" if not registry.get(slot).bound else cur
-        parts.append(f"{slot}/{short}" + (f"（可选 {', '.join(opts)}）" if extra else ""))
+        origin = f"[{cap.name}]" if action.bound else "[内置默认]"
+        label = cap.name if action.bound else "内置默认"
+        parts.append(f"{slot}/{label}" + (f"（可选 {', '.join(opts)}）" if extra else ""))
     console.print("[dim]  " + "  ".join(parts) + "[/dim]")
+    missing = [s for s in ACTION_NAMES if not registry.get(s).bound]
+    if missing:
+        console.print(f"[yellow]  ⚠ 槽位 {', '.join(missing)} 未由该能力提供，"
+                      f"已回退内置默认提示词[/yellow]")
 
 
 def main() -> None:
@@ -267,23 +277,35 @@ def main() -> None:
                         help="只校验配置并打印生效接入（0=可用 / 1=不可用），不启动循环")
     parser.add_argument("--smoke", action="store_true", help="冒烟测试（Mock 模型，零 API 消耗）")
     parser.add_argument("--smoke-live", action="store_true", help="冒烟测试（真实 kimi API）")
-    parser.add_argument("--skills-dir", type=Path,
-                        default=Path(os.environ.get("REACT_AGENT_SKILLS_DIR", DEFAULT_SKILLS_DIR)),
-                        help=f"skill 绑定根目录（默认 {DEFAULT_SKILLS_DIR}，"
-                             f"可由环境变量 REACT_AGENT_SKILLS_DIR 覆盖）")
+    parser.add_argument("--capability", metavar="名字",
+                        help="按名字选用能力（如 coding）。与 --skills-dir 二选一；"
+                             "都没给时用配置里的 active_capability（默认 default）")
+    parser.add_argument("--skills-dir", type=Path, default=None,
+                        help=f"skill/能力的根目录（默认由 active_capability 决定，"
+                             f"通常是 {DEFAULT_SKILLS_DIR}）；"
+                             f"也可用环境变量 REACT_AGENT_SKILLS_DIR 指定")
     args = parser.parse_args()
+
+    # 没显式指定时**不要**把默认路径塞进去：否则 `resolve_capability` 会走"按路径解析"，
+    # 配置里的 active_capability / 内置别名就永远不生效（--check 曾因此把 default 显示成 skills）。
+    skills_dir = args.skills_dir
+    if skills_dir is None and args.capability is None:
+        env_dir = os.environ.get("REACT_AGENT_SKILLS_DIR")
+        skills_dir = Path(env_dir) if env_dir else None
+    if args.capability:
+        skills_dir = Path(args.capability)   # 名字交给 resolve_capability 解析
 
     console = Console()
     if args.bind:
-        cmd_bind(args.bind[0], args.bind[1], args.skills_dir, console)
+        cmd_bind(args.bind[0], args.bind[1], skills_dir, console)
     elif args.check:
-        cmd_check(console, args.skills_dir)
+        cmd_check(console, skills_dir)
     elif args.smoke:
-        cmd_smoke(live=False, skills_dir=args.skills_dir, console=console)
+        cmd_smoke(live=False, skills_dir=skills_dir, console=console)
     elif args.smoke_live:
-        cmd_smoke(live=True, skills_dir=args.skills_dir, console=console)
+        cmd_smoke(live=True, skills_dir=skills_dir, console=console)
     else:
-        cmd_repl(args.skills_dir, console)
+        cmd_repl(skills_dir, console)
 
 
 if __name__ == "__main__":
