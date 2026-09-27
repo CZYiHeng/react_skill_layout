@@ -66,6 +66,13 @@ DEFAULTS: dict = {
     "allow_outside_work_dir": False,
     "plan_model": "",            # 计划阶段专用模型（推理模型如 deepseek-reasoner）；空=与 model 相同
     "plan_timeout_sec": 300,     # 计划模型超时（推理模型更慢，默认更长）
+    #: 生效的能力（写齐五阶段的一套 skill）。`default` = 仓库自带的 `<base>/skills`。
+    #: 具名能力在 `<base>/capabilities/<名>/`，也可由 capability_paths 指向别处。
+    "active_capability": "default",
+    #: 额外能力根目录：每个条目既可以是"一个能力目录"，也可以是"装多个能力的容器"。
+    "capability_paths": [],
+    #: 能力别名：`{"旧名": "新名"}`，用于改名后仍让旧配置/旧启动脚本可用。
+    "capability_aliases": {},
     #: 槽位内 skill 变体选择：`{"<槽位>": "<变体名>"}`，缺省空 = 五个槽位全用默认。
     #: 变体 = `<skills_root>/<槽位>/<变体名>/SKILL.md`（默认变体是槽位根下的 SKILL.md）。
     #: 未知变体名会被降级为默认并告警，不阻断启动。

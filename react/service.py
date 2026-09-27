@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Callable
 
 from .action import ACTION_NAMES, ActionRegistry
+from .capability import resolve_capability
 from .config import resolve_provider
 from .context import SessionContext
 from .executor import Executor, LocalExecutor
@@ -338,7 +339,12 @@ class ReactService:
     def __init__(self, cfg: dict, base_dir: Path, skills_dir: Path | None = None):
         self.cfg = cfg
         self.base_dir = Path(base_dir)
-        self.skills_dir = Path(skills_dir) if skills_dir else self.base_dir / "skills"
+        # 能力解析：显式 skills_dir（如 --skills-dir）优先；否则按 active_capability 解析。
+        # 缺省 `default` → `<base>/skills`，与从前逐字节一致。
+        self.capability = resolve_capability(
+            cfg, self.base_dir, skills_dir if skills_dir else None
+        )
+        self.skills_dir = self.capability.root
         #: 最近一次解析出的工作目录与可能的告警（越界/不存在时回退）
         self.work_dir: Path = self.base_dir
         self.work_dir_warning: str | None = None

@@ -661,6 +661,154 @@ def check_skill_variants(base_dir: Path) -> list[str]:
     return failures
 
 
+def check_capability_model(base_dir: Path) -> list[str]:
+    """能力模型：能力=自包含目录，名字与路径解耦，解析唯一。
+
+    这是"把某个功能框架 skill 化、写完能整体分离出去"的机制面：能力靠名字被选中，
+    靠目录被搬走，框架不留悬空引用；槽位缺失会回退内置默认，故必须能看出"这个槽位
+    到底是谁提供的"。
+    """
+    import json
+    import tempfile
+
+    from react.action import ACTION_NAMES, parse_skill_md
+    from react.capability import (DEFAULT_CAPABILITY, discover, probe,
+                                  resolve_capability)
+    from react.config import DEFAULTS, ConfigError
+    from react.service import ReactService
+
+    failures: list[str] = []
+
+    def stages(root: Path) -> None:
+        for slot in ACTION_NAMES:
+            d = root / slot
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {slot}\n---\n\nCAP-{slot}\n", encoding="utf-8")
+
+    # 1) 零回归：缺省解析到 <base>/skills，且五槽位 body 与直接解析 SKILL.md 逐字节一致
+    svc = ReactService(dict(DEFAULTS), base_dir)
+    if svc.skills_dir != base_dir / "skills":
+        failures.append(f"缺省能力根应为 {base_dir / 'skills'}，实际 {svc.skills_dir}")
+    if svc.capability.name != DEFAULT_CAPABILITY:
+        failures.append(f"缺省能力名应为 {DEFAULT_CAPABILITY}，实际 {svc.capability.name}")
+    reg = svc.build_registry()
+    for slot in ACTION_NAMES:
+        md = base_dir / "skills" / slot / "SKILL.md"
+        if not md.is_file():
+            continue
+        _, expect = parse_skill_md(md.read_text(encoding="utf-8"), fallback_name=slot)
+        if reg.get(slot).skill_body != expect.strip():
+            failures.append(f"缺省能力下槽位 {slot} 的 body 与直接解析 SKILL.md 不一致")
+
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td)
+        # 仓库内置的通用档（default 能力）
+        stages(base / "skills")
+        # 能力容器：capabilities/coding
+        stages(base / "capabilities" / "coding")
+        (base / "capabilities" / "coding" / "capability.json").write_text(
+            json.dumps({"name": "coding", "version": "1.0.0",
+                        "description": "测试用写码能力"}), encoding="utf-8")
+        # 只提供 act 的半能力（用于验证"槽位来源可判定"）
+        (base / "capabilities" / "partial" / "act").mkdir(parents=True)
+        (base / "capabilities" / "partial" / "act" / "SKILL.md").write_text(
+            "---\nname: act\n---\n\nPARTIAL-ACT\n", encoding="utf-8")
+        # 历史平级布局：skills_legacy（无 capability.json，应能按名字解析）
+        stages(base / "skills_legacy")
+
+        cfg = dict(DEFAULTS)
+        caps, _ = discover(cfg, base)
+        if set(caps) != {"coding", "partial", "skills_legacy"}:
+            failures.append(f"能力发现不正确：{sorted(caps)}")
+
+        # 2) 具名解析 + 3) 别名 + 4) 路径解析
+        if resolve_capability(cfg, base, "coding").root != base / "capabilities" / "coding":
+            failures.append("具名能力未解析到 capabilities/coding")
+        alt = dict(cfg, capability_aliases={"old-code": "coding"})
+        if resolve_capability(alt, base, "old-code").name != "coding":
+            failures.append("能力别名未生效")
+        if resolve_capability(cfg, base, str(base / "skills_legacy")).name != "skills_legacy":
+            failures.append("按目录路径解析未生效")
+        if resolve_capability(cfg, base).name != DEFAULT_CAPABILITY:
+            failures.append("空 ref 应解析为 default 能力")
+        # 配置里的 active_capability 必须真的生效（"" 不得被当成 default 提前返回）
+        active = dict(cfg, active_capability="skills_legacy")
+        if resolve_capability(active, base).name != "skills_legacy":
+            failures.append("配置 active_capability 未生效（可能被空串短路成 default）")
+
+        # 5) 未知名 → 报错且列出可用能力（不静默回退 default）
+        try:
+            resolve_capability(cfg, base, "nope")
+            failures.append("未知能力名未报错（静默回退会让人以为在用自己的能力）")
+        except ConfigError as e:
+            if "coding" not in str(e):
+                failures.append("未知能力的报错未列出可用能力")
+
+        # 6) manifest 损坏 → 降级匿名能力 + 告警，不抛
+        broken = base / "capabilities" / "broken"
+        stages(broken)
+        (broken / "capability.json").write_text("{ not json", encoding="utf-8")
+        cap = probe(broken)
+        if cap.name != "broken":
+            failures.append(f"manifest 损坏时应用目录名做能力名，实际 {cap.name}")
+        if not cap.warnings:
+            failures.append("manifest 损坏未告警")
+        # requires 不满足 → 跳过该能力 + 告警
+        mism = base / "capabilities" / "needs-future"
+        stages(mism)
+        (mism / "capability.json").write_text(json.dumps(
+            {"name": "needs-future", "requires": {"react_agent": ">=99.0"}}),
+            encoding="utf-8")
+        caps2, warns2 = discover(cfg, base)
+        if "needs-future" in caps2:
+            failures.append("requires 不满足的能力不应被载入")
+        if not any("needs-future" in w for w in warns2):
+            failures.append("requires 不满足时未告警")
+        # 未知 manifest 字段 → 告警（拼错的键不该被静默忽略）
+        odd = base / "capabilities" / "odd"
+        stages(odd)
+        (odd / "capability.json").write_text(json.dumps(
+            {"name": "odd", "descripton": "拼错的键"}), encoding="utf-8")
+        if not any("descripton" in w for w in probe(odd).warnings):
+            failures.append("manifest 未知字段未告警")
+
+        # 7) 同名覆盖 → 告警含来源
+        dup = base / "extra" / "coding"
+        stages(dup)
+        over = dict(cfg, capability_paths=[str(base / "extra")])
+        _, warns3 = discover(over, base)
+        if not any("重复" in w and "coding" in w for w in warns3):
+            failures.append("同名能力覆盖未告警")
+
+        # 8) 槽位来源可判定：partial 只给 act，其余必须标为回退内置默认
+        pcap = resolve_capability(cfg, base, "partial")
+        if set(pcap.provided) != {"act"}:
+            failures.append(f"partial 能力提供的阶段判定错误：{pcap.provided}")
+        if pcap.complete:
+            failures.append("partial 能力不应被判为完整")
+        if "think" not in pcap.missing():
+            failures.append("partial 的缺失阶段未列出 think")
+        cfg_partial = dict(cfg, active_capability="partial")
+        svc2 = ReactService(cfg_partial, base)
+        reg2 = svc2.build_registry()
+        if "PARTIAL-ACT" not in reg2.get("act").skill_body:
+            failures.append("partial 能力未接管 act 槽位")
+        # 未提供的槽位回退内置默认提示词（不是空 body）
+        if "PARTIAL-ACT" in reg2.get("think").skill_body or not reg2.get("think").skill_body.strip():
+            failures.append("partial 未提供的槽位应回退内置默认提示词")
+
+    # 9) 能力名不因目录改名而漂移：probe 用 manifest 的 name 优先于目录名
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td) / "some-dir"
+        stages(root)
+        (root / "capability.json").write_text(
+            json.dumps({"name": "coding"}), encoding="utf-8")
+        if probe(root).name != "coding":
+            failures.append("manifest 的 name 应优先于目录名")
+    return failures
+
+
 def check_pressure_estimate() -> list[str]:
     """压力计量：实测优先、新增部分靠估算、并用实测在线校准。"""
     failures: list[str] = []

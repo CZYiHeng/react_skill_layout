@@ -477,6 +477,12 @@ CONFIG_FIELDS: dict[str, type] = {
     "gate_mode": str, "work_dir": str, "allow_outside_work_dir": bool,
     #: 槽位内 skill 变体选择 {"<槽位>": "<变体名>"}；dict 走单独校验分支
     "skill_variants": dict,
+    #: 生效能力名（default = 仓库内置）；字符串
+    "active_capability": str,
+    #: 额外能力根目录：字符串路径列表；list 走单独校验分支
+    "capability_paths": list,
+    #: 能力别名 {"旧名": "新名"}；dict 分支校验键值都是字符串
+    "capability_aliases": dict,
 }
 #: 接入配置字段：单独处理，合并后再整体校验一次（缺 key 就不让写）。
 CONFIG_PROVIDER_FIELDS = ("providers", "active_provider")
@@ -517,19 +523,29 @@ async def api_config_put(request: Request) -> JSONResponse:
             except (TypeError, ValueError):
                 return JSONResponse({"error": f"字段 {key} 应为整数"}, status_code=400)
         elif typ is dict:
-            # 键值对型配置（目前只有 skill_variants）：键必须是槽位名、值必须是字符串
+            # 键值对型配置：skill_variants（键必须是槽位名）/ capability_aliases（键值都是名字）
             if not isinstance(val, dict):
                 return JSONResponse({"error": f"字段 {key} 应为对象"}, status_code=400)
-            bad_slot = [k for k in val if k not in ACTION_NAMES]
-            if bad_slot:
-                return JSONResponse(
-                    {"error": f"字段 {key} 含未知槽位：{', '.join(bad_slot)}；"
-                              f"可选：{', '.join(ACTION_NAMES)}"},
-                    status_code=400,
-                )
+            if key == "skill_variants":
+                bad_slot = [k for k in val if k not in ACTION_NAMES]
+                if bad_slot:
+                    return JSONResponse(
+                        {"error": f"字段 {key} 含未知槽位：{', '.join(bad_slot)}；"
+                                  f"可选：{', '.join(ACTION_NAMES)}"},
+                        status_code=400,
+                    )
             if any(not isinstance(v, str) for v in val.values()):
                 return JSONResponse(
-                    {"error": f"字段 {key} 的值应为字符串（变体名）"}, status_code=400)
+                    {"error": f"字段 {key} 的值应为字符串"}, status_code=400)
+            current[key] = val
+        elif typ is list:
+            # 列表型配置（capability_paths）：元素必须是字符串路径
+            if not isinstance(val, list):
+                return JSONResponse({"error": f"字段 {key} 应为数组"}, status_code=400)
+            if any(not isinstance(v, str) or not v.strip() for v in val):
+                return JSONResponse(
+                    {"error": f"字段 {key} 的元素应是非空字符串（目录路径）"},
+                    status_code=400)
             current[key] = val
         else:
             current[key] = str(val)
