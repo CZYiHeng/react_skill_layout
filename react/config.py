@@ -35,7 +35,8 @@ DEFAULTS: dict = {
     "max_rounds": 10,
     "step_timeout_sec": 120,
     "show_reasoning": True,
-    "max_context_messages": 100,
+    "max_context_messages": 400,
+    "max_context_tokens": 100000,   # 压缩阈值（token）：下一次请求预估超过它才压缩
     "enable_shell_exec": False,
     "enable_file_write": False,
     "exec_timeout_sec": 30,
@@ -59,12 +60,20 @@ DEFAULTS: dict = {
 #: 长任务想强制先看计划再开跑，把 gate_mode 显式设为 "plan" 即可。
 GATE_MODES = ("plan", "step", "auto", "phase")
 
-#: max_context_messages 语义：**发送给模型的最近原文条数预算**。
-#: 它是「压缩多久触发一次」的权衡，不是越小越好——每压缩一次都会改写窗口起点，
-#: 使历史中段变化、该点之后的前缀缓存全部作废（provider 按完整前缀单元匹配）。
-#: 因此默认给得较宽（100 条）：常规任务全程不触发压缩 → 前缀纯追加，
-#: 缓存命中率随轮次单调升高；只有长任务才付出周期性的压缩代价。
-#: 想省上下文可调小（如 16），代价是压缩更频繁、缓存命中更低。
+#: max_context_tokens 语义：**压缩的触发阈值（token）**。
+#: 每次模型调用后都会回灌 provider 的实测 usage，据此预估"下一次请求的 prompt 量"
+#: （实测 + 新增消息估算，对齐 DSH token-meter 的 pressureTokens 口径）；只有预估
+#: 超过此阈值才压缩一次。
+#:
+#: 为什么用 token 而不是条数：条数表达不了"这次请求要花多少 prompt tokens"——一条
+#: tool 回执上万字符也只算 1 条。旧实现按条数触发，在真实负载下被反复触发，而
+#: provider 的前缀缓存要求完整匹配缓存前缀单元，压缩一次就作废其后全部缓存
+#: （实测同会话 prompt 非单调 19358→16481，OBSERVE 命中率仅 3.3%）。
+#: 取 100k 是与端点窗口对齐后的保守值（DeepSeek 1M / Kimi 256k / 常见端点 128k），
+#: 留足输出预算。窗口更小的模型请按"窗口 × 0.6"下调。
+#: 设为 0 或负数 = 退回旧的条数触发（回滚开关）。
+#:
+#: max_context_messages 语义：**硬上限**（条数），只防病态膨胀，不再主导压缩。
 
 _PLACEHOLDER_HINT = "<在此填入"
 

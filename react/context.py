@@ -41,6 +41,34 @@ def _summarize(msg: dict, limit: int = 140) -> str:
 
 _DIGEST_MAX_LINES = 20  # 历史摘要最多保留多少行（防摘要本身随历史增长而膨胀）
 _DIGEST_HEADER = "# 历史摘要（较早消息已压缩，仅供定位；完整轨迹见上方消息）"
+
+# ---- token 压力估算（对齐 DSH token-meter 的思路：实测 + 预估，而非纯猜） ----
+
+#: 字符数 → token 的初猜比例。保守取 2.0（中英混排、代码各半时的中位经验值）。
+#: 它只是个起点：每次真实调用后都会用 provider 返回的实测 prompt 校准（见 _factor）。
+_CHARS_PER_TOKEN = 2.0
+#: 校准系数的滚动平均权重。取 0.5：一次实测就明显纠偏，又不会被单次异常值主导。
+_FACTOR_EMA = 0.5
+#: 校准系数的夹紧区间。**夹紧而不是丢弃**：早先的写法是"比值超范围就整次不学"，
+#: 结果一个合法的偏高比例（例如实测 40）会把校准永久卡在初值 1.0，等于从不校准。
+#: 真实端点的 chars/token 比例大致在 1~8 之间（中文偏小、代码偏大），
+#: 给到 0.5~12 足够覆盖，同时挡住明显异常的 usage。
+_FACTOR_MIN, _FACTOR_MAX = 0.5, 12.0
+
+
+def _msg_chars(msg: dict) -> int:
+    """一条消息的字符数（含 tool_calls 的参数文本，它们是真实 token 来源）。"""
+    n = len(msg.get("content") or "")
+    for tc in msg.get("tool_calls") or []:
+        fn = tc.get("function") or {}
+        n += len(fn.get("name") or "") + len(fn.get("arguments") or "")
+    return n
+
+
+def estimate_tokens(messages: list[dict], factor: float = 1.0) -> int:
+    """按字符数估算一批消息的 token 量；factor 为实测校准系数。"""
+    chars = sum(_msg_chars(m) for m in messages)
+    return int(chars / _CHARS_PER_TOKEN * factor)
 #: 压缩后除任务锚点外**至少**保留的原文条数。
 #: 不能简单取 cap//2：cap 很小时（如 4）cap//2=2，而循环每步会追加 2~4 条消息，
 #: 于是压缩刚结束就又超预算，窗口条数失控、压缩每步触发。给一个下限即可让它
@@ -61,6 +89,13 @@ class SessionContext:
     # 于是两次压缩之间窗口纯追加地增长，前缀缓存持续命中。<=0 表示不压缩（全量发送）。
     # 调小 = 省上下文但压缩更频繁、缓存命中更低（见 react/config.py 的说明）。
     max_context_messages: int = 100
+    #: **压缩阈值（token）**：下一次请求的预估 prompt 超过它才压缩。
+    #: 旧实现按「条数」触发，而条数表达不了"这次请求要花多少 prompt tokens"——
+    #: 一条 tool 回执上万字符也算 1 条，于是长任务在真实负载下被频繁压缩，
+    #: 而 provider 的前缀缓存要求完整匹配缓存前缀单元，压缩一次就作废其后全部缓存
+    #: （实测同会话 prompt 非单调：19358→16481，OBSERVE 命中率仅 3.3%）。
+    #: <=0 表示不按 token 压缩，退回旧的条数触发（回滚开关）。
+    max_context_tokens: int = 100000
     # 运行环境信息（OS/shell/cwd/工具可用性），拼进每步 system 提示
     env_info: str = ""
 
@@ -71,6 +106,14 @@ class SessionContext:
     _digest_upto: int = field(default=0, init=False)
     #: 已冻结的摘要文本；仅在压缩推进时重建一次，其余调用逐字节复用
     _digest_text: str = field(default="", init=False)
+    #: 上一次真实调用的实测 prompt tokens（provider 返回）；None = 还没有实测值
+    _last_prompt_tokens: int | None = field(default=None, init=False)
+    #: 上一次真实调用组装出的消息条数（用于算"自那以后新增了多少"）
+    _call_msg_count: int = field(default=0, init=False)
+    #: 字符→token 的在线校准系数，由实测/估算比值的滚动平均得到
+    _factor: float = field(default=1.0, init=False)
+    #: 上一次调用**发出**的消息列表（估算 prompt 用，与实测同源，便于精确校准）
+    _last_sent: list[dict] = field(default_factory=list, init=False)
 
     # ---- 历史维护 ----
 
@@ -132,6 +175,54 @@ class SessionContext:
         self.plan_index = 0
         self._digest_upto = 0
         self._digest_text = ""
+        # 压力计量随账本一起归零：否则新任务会沿用上一个任务的实测值而误判已超预算。
+        # 校准系数**不**重置——它刻画的是"这个模型/端点的分词比例"，跨任务依然有效。
+        self._last_prompt_tokens = None
+        self._call_msg_count = 0
+        self._last_sent = []
+
+    # ---- token 压力计量（实测 + 预估 + 在线校准） ----
+
+    def note_call(self, sent_messages: list[dict]) -> None:
+        """在一次真实调用**发出前**记录其形状，供随后 observe_usage 精确校准。
+
+        传发出前的那一份，而不是调用后再取 self.messages：模型调用期间账本又新增了
+        回执，用后者会让估算与实测不同源，校准系数被系统性带偏。
+        """
+        self._call_msg_count = len(self.messages)
+        self._last_sent = list(sent_messages)
+
+    def observe_usage(self, usage: dict | None) -> None:
+        """回灌 provider 的实测 usage，校准字符→token 系数。
+
+        没有实测值（部分端点不返回 usage）时什么都不做，压力计量退化为纯估算——
+        绝不因为拿不到 usage 就改变任何既有行为。
+        """
+        if not usage:
+            return
+        prompt = usage.get("prompt")
+        if not isinstance(prompt, int) or prompt <= 0:
+            return
+        est = estimate_tokens(self._last_sent, 1.0) if self._last_sent else 0
+        if est > 0:
+            ratio = prompt / est
+            # 夹紧而非丢弃：一次偏高/偏低的观测仍能推动系数，只是不会越界。
+            self._factor = min(_FACTOR_MAX, max(_FACTOR_MIN,
+                              (1 - _FACTOR_EMA) * self._factor + _FACTOR_EMA * ratio))
+        self._last_prompt_tokens = prompt
+
+    def pressure_tokens(self) -> int:
+        """下一次请求的预估 prompt 量（token）。
+
+        实测优先："上次实测 prompt" + "自那以后新增消息的估算"。
+        这正是 DSH token-meter 的口径（pressureTokens + 新增 surface = projectedTokens）：
+        用实测兜住历史，用估算补上刚追加的部分。
+        没有任何实测值时退化为全量估算。
+        """
+        if self._last_prompt_tokens is None:
+            return estimate_tokens(self.messages, self._factor)
+        fresh = self.messages[self._call_msg_count:]
+        return self._last_prompt_tokens + estimate_tokens(fresh, self._factor)
 
     # ---- 消息组装 ----
 
@@ -156,6 +247,27 @@ class SessionContext:
             start -= 1
         return start
 
+    def _should_compress(self) -> bool:
+        """是否该压缩。**主触发是 token 压力**，条数只作硬上限兜底。
+
+        旧实现按「最近 N 条」触发，而条数表达不了"这次请求要花多少 prompt tokens"：
+        一条 tool 回执上万字符也只算 1 条。于是 12/16 这种小预算在真实负载下被反复
+        触发，而 provider 的前缀缓存要求完整匹配缓存前缀单元——压缩一次就作废其后
+        全部缓存（实测同会话 prompt 非单调 19358→16481，OBSERVE 命中率仅 3.3%）。
+
+        两个条件任一成立才压缩：
+        - token 压力 >= `max_context_tokens`（主路径）；
+        - 条数 >= `max_context_messages`（硬上限，防极端长尾把账本拖爆）。
+
+        注意硬上限的代价：它**忽略单条大小**，所以一条超大消息也会触发一次压缩。
+        这是护栏应有的取舍——宁可多压一次，也不让窗口无限增长。
+        `max_context_tokens<=0` 时退回纯条数口径，保留回滚开关。
+        """
+        if self.max_context_tokens > 0 and self.pressure_tokens() >= self.max_context_tokens:
+            return True
+        cap = self.effective_budget
+        return cap > 0 and len(self.messages) - self._digest_upto >= cap
+
     def _maybe_compress(self) -> None:
         """按空间预算**单调推进**压缩边界，推进时重建一次摘要。无压缩则原地不动。
 
@@ -165,22 +277,25 @@ class SessionContext:
         命中）。改为只在超预算时压缩一次：
 
         - 压缩时剪到 `_MIN_KEEP`（而非贴着上限剪），于是压缩后窗口还能**纯追加**地
-          增长 `预算 - MIN_KEEP` 条才再次触发——两次压缩之间前缀逐字节稳定；
+          增长一段才再次触发——两次压缩之间前缀逐字节稳定；
         - 预算之外只剩首条任务锚点留在窗口侧，其余原文全部沉淀进摘要。
+
+        触发口径见 `_should_compress`：**token 压力优先**，条数只作硬上限。
         """
         hist_len = len(self.messages)
-        budget = self.effective_budget
-        if budget <= 0:
-            return
-        # 触发条件看的是**窗口本身的大小**，不是账本总长。
-        # 若写成 hist_len > budget，压缩后窗口恒为 keep 条、其后的每条新增都再次超限，
-        # 于是每步都压缩、digest_upto 每步 +1，窗口条数不变而内容整体平移——
-        # 完全等价于老实现的「滑动窗口」，缓存照样全灭（这个坑被 check_cache_prefix 抓到）。
-        # 用 >=：压缩是"事后"发生的（当前这一步的消息已入账本），留一条余量才不会越界。
-        if hist_len - self._digest_upto < budget:
+        if not self._should_compress():
             return  # 未超预算：一切照旧，前缀零改动
-        keep = max(_MIN_KEEP, budget // 2)
+        # 保留量：条数口径下是预算的一半（留出纯追加增长空间）；
+        # token 口径下沿用 _MIN_KEEP 作为不可再少的锚（避免把小任务削成空窗口）。
+        budget = self.effective_budget
+        keep = max(_MIN_KEEP, budget // 2) if budget > 0 else _MIN_KEEP
+        # 裁剪起点必须夹在 [max(1, 边界), hist_len-1]：
+        # keep 可能**大于账本长度**（条数硬上限调大后，budget//2 很容易超过实际条数），
+        # 此时 hist_len - keep 会变成负数，把 _digest_upto 推成负值——之后
+        # `messages[_digest_upto:]` 会从尾部倒着切片，窗口和摘要双双错乱。
+        # 下界取 max(1, _digest_upto) 同时保证：首条任务锚点留在窗口侧、边界单调不减。
         start = self._align_window_start(hist_len - keep)
+        start = min(max(start, max(1, self._digest_upto)), hist_len - 1)
         dropped = self.messages[self._digest_upto:start]
         if dropped:
             shown = dropped[-_DIGEST_MAX_LINES:]

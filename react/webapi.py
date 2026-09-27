@@ -108,7 +108,8 @@ def _binds(registry) -> dict:
 def _run_task(sess: Session, task: str, cfg: dict, allow_exec: bool | None,
               max_rounds: int | None, skills_dir: str | None,
               gate_mode: str | None = None, work_dir: str | None = None,
-              allow_outside_work_dir: bool | None = None) -> None:
+              allow_outside_work_dir: bool | None = None,
+              continue_session: bool = False) -> None:
     """工作线程主体：构造运行时 → 跑循环 → 收尾发 done/error 事件。"""
     try:
         svc = ReactService(cfg, BASE_DIR, Path(skills_dir) if skills_dir else None)
@@ -126,7 +127,7 @@ def _run_task(sess: Session, task: str, cfg: dict, allow_exec: bool | None,
             sess.out.put(AgentEvent("warn", text=svc.work_dir_warning))
         sess.status = "running"
         runtime.loop.token_stats = sess.token_stats  # 会话级 token 统计接入循环
-        result = runtime.loop.run(task)
+        result = runtime.loop.run(task, continue_session=continue_session)
         sess.last_result = {"status": result.status, "rounds": result.rounds,
                             "final_text": result.final_text}
         sess.status = "done" if result.status == "done" else result.status
@@ -210,7 +211,8 @@ async def api_task(request: Request) -> JSONResponse:
         target=_run_task,
         args=(sess, task, cfg, body.get("allow_exec"), body.get("max_rounds"),
               body.get("skills_dir"), body.get("gate_mode"),
-              body.get("work_dir"), body.get("allow_outside_work_dir")),
+              body.get("work_dir"), body.get("allow_outside_work_dir"),
+              bool(body.get("continue_session", False))),
         daemon=True,
     )
     sess.thread.start()
@@ -463,7 +465,7 @@ CONFIG_FIELDS: dict[str, type] = {
     "model": str, "base_url": str, "api_key": str,
     "plan_model": str, "plan_timeout_sec": int,
     "max_rounds": int, "step_timeout_sec": int, "show_reasoning": bool,
-    "max_context_messages": int, "exec_timeout_sec": int,
+    "max_context_messages": int, "max_context_tokens": int, "exec_timeout_sec": int,
     "enable_shell_exec": bool, "enable_file_write": bool,
     "sandbox_shell": bool, "sandbox_integrity_low": bool,
     "shell_backend": str,
