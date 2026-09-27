@@ -10,7 +10,7 @@
   },
 
   "max_rounds": 10,
-  "max_context_tokens": 200000,
+  "max_context_tokens": 100000,
   "show_reasoning": true,
   "gate_mode": "auto",
 

@@ -355,28 +355,37 @@ def check_token_budget() -> list[str]:
     if ctx4._digest_upto == 0:
         failures.append("max_context_tokens=0 时条数护栏未生效（回滚开关失效）")
 
-    # 5) 默认预算的回归保护。构造要落在**两个候选值之间**才有鉴别力：
-    #    8 条 20k 字符 + 60 条 1k 字符 ≈ 110k token 压力 —— 200k 下不压缩、
-    #    100k 下会压缩。若有人把默认值调回 100k，这里立刻变红。
-    #    （实测任务的 72734 token 量级**区分不了** 100k 与 200k，用它会得到
-    #      一个永远绿的假断言——这是第一版写错的地方。）
-    reg = SessionContext(max_context_tokens=200_000)
-    for i in range(8):
-        reg.add_user("x" * 20_000)          # 粗略模拟大 tool 回执
-    for i in range(60):
-        reg.add_user("y" * 1_000)
-    pressure = reg.pressure_tokens()
-    reg.build_step_messages(act, "执行")
-    if reg._digest_upto != 0:
+    # 5) 默认预算的回归保护。两件事：
+    #    (a) 默认值就是 100k —— 直接断言 DEFAULTS，改它必红；
+    #    (b) 判定确实在按 token 走：越阈值必压、阈值以下不压。
+    #    为什么默认值是 100k：实测阈值 200k 时单次 prompt 峰值到 199,371，
+    #    95 次调用累计 10.87M；压到 100k 正是为了不让历史滚到 20 万才压缩。
+    from react.config import DEFAULTS as _D
+    if _D["max_context_tokens"] != 100_000:
         failures.append(
-            f"默认 200k 预算下不该压缩（构造压力 {pressure}），"
-            f"实际 _digest_upto={reg._digest_upto} —— 默认值疑似被调小"
-        )
-    if not (100_000 < pressure < 200_000):
+            f"默认 max_context_tokens 应为 100000，实际 {_D['max_context_tokens']}")
+
+    def _pressure(big, small, chars=20_000):
+        c = SessionContext(max_context_tokens=100_000)
+        for i in range(big):
+            c.add_user("x" * chars)
+        for i in range(small):
+            c.add_user("y" * 1_000)
+        return c
+
+    # (b-1) 越过阈值 → 必须判定需压缩（这才是把阈值调小的意义）
+    over = _pressure(20, 0)                      # 压力 ≈ 200k
+    if not over._should_compress():
+        failures.append(f"压力 {over.pressure_tokens()} 超过 100k 却未判定需压缩")
+    # (b-2) 阈值以下 → 不得压缩
+    under = _pressure(6, 0)                      # 压力 ≈ 60k
+    if under._should_compress():
+        failures.append(f"压力 {under.pressure_tokens()} 未超 100k 却判定需压缩")
+    # 构造有效性：两组必须真的分列阈值两侧，否则上面的判定失去意义
+    if not (under.pressure_tokens() < 100_000 < over.pressure_tokens()):
         failures.append(
-            f"回归保护的构造失效：压力 {pressure} 未落在 (100k, 200k) 区间，"
-            "该断言将失去鉴别力"
-        )
+            f"构造失效：under={under.pressure_tokens()} over={over.pressure_tokens()} "
+            "未分列 100k 两侧")
     return failures
 
 

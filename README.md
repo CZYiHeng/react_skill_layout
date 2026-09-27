@@ -207,15 +207,16 @@ uv run python tools/cache_probe.py    # 离线缓存探针：改造前/后逐字
   配置文件里的 `gate_mode`）。注意 `auto` 档下 Web 端闸门弹出后仍有 30s 倒计时自动放行。
 - **`[EXEC:]` 默认不执行**：`enable_shell_exec` / `enable_file_write` 默认关闭，
   开启后 agent 才能真正跑命令、写文件（写盘范围受 `work_dir` 约束）。
-- **压缩看 token 预算，不看条数**：`max_context_tokens`（默认 200000）是压缩阈值。
+- **压缩看 token 预算，不看条数**：`max_context_tokens`（默认 100000）是压缩阈值。
   每次调用后用 provider 的实测 usage 校准"下一次请求大概多少 token"，超阈值才压缩一次。
   早先的 `max_context_messages`（条数预算）**已删除**：它与 token 预算并列摆放，容易被
   当成"上下文大小"旋钮一直留着（12 条会让压缩频繁触发、把前缀缓存反复打断）。
   条数只剩一个内部护栏（400 条）防病态长尾。
-  **判据：如果 `/api/token_stats` 里 `cache_hit_rate` 长期低于 40%，说明预算仍偏小**
-  （压缩太频繁会把 provider 的前缀缓存反复打断）——上调 `max_context_tokens`。
-  默认 200k 是实测得出的：一次工具型任务 prompt 峰值 72734 token，在 100k 下仍触发
-  4 次压缩。窗口更小的端点按「窗口 × 0.6」下调（128k 窗口 → 约 76000）。
+  **判据：看 `/api/token_stats` 的两个数**——`cache_hit_rate` 长期低于 40% 说明压缩
+  太频繁（该上调阈值）；而单次 prompt 接近或撞上阈值、`prompt` 总量居高不下，说明
+  阈值偏大（该下调）：每次调用都要重发全部历史，单次上限越大，二次增长的代价越高。
+  默认 100k 就是被实测修正过的：一度调到 200k，结果长任务单次 prompt 涨到 199,371、
+  10 轮累计 10.87M。窗口更小的端点按「窗口 × 0.6」下调（128k 窗口 → 约 76000）。
 - **Windows 沙箱不阻断网络**，且子进程仍以当前用户身份运行（详见
   [docs/DESIGN.md](docs/DESIGN.md) 安全模型一节）。
 

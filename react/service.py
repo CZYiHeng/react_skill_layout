@@ -380,7 +380,7 @@ class ReactService:
     def build_context(self, max_rounds: int | None = None) -> SessionContext:
         return SessionContext(
             max_rounds=int(max_rounds or self.cfg.get("max_rounds", 10)),
-            max_context_tokens=int(self.cfg.get("max_context_tokens", 200000)),
+            max_context_tokens=int(self.cfg.get("max_context_tokens", 100000)),
             env_info=self._build_env_info(),
         )
 
