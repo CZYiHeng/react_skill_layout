@@ -24,15 +24,18 @@
 # 1. 安装依赖（uv 管理，自动创建 .venv 并锁定版本）
 uv sync
 
-# 2. 配置模型 key（推荐环境变量，避免明文落盘）
-export REACT_AGENT_API_KEY="sk-xxx"
-# 或：cp config.example.json config.json 后在文件里填 api_key（config.json 已被 .gitignore 排除）
+# 2. 配置模型接入：复制模板后在 providers 里填 key（config.json 已被 .gitignore 排除）
+cp config.example.json config.json
+#    多家端点并存看 config.providers.example.json（用 active_provider 选生效的那家）
 
 # 3. 启动 REPL
 uv run python main.py
 ```
 
-> 支持任何 **OpenAI 兼容端点**（deepseek / kimi / Moonshot / 通义 / GLM 等），`base_url` + `api_key` + `model` 三件套即可。已内置 kimi 思考模式适配（reasoning 在 `reasoning_content`，思考模式仅支持 `tool_choice="auto"`）。
+> 支持任何 **OpenAI 兼容端点**（deepseek / kimi / Moonshot / 通义 / GLM 等），一家一个
+> `providers` 条目（`base_url` + `api_key` + `model`），用 `active_provider` 指定生效的那家，
+> Web 端可在设置里随时切换。**key 只从配置文件读**（不读环境变量），详见
+> [docs/DESIGN.md](docs/DESIGN.md) §5。
 
 ## 使用示例
 
@@ -45,7 +48,7 @@ react> 帮我设计一个 Excel 转 Markdown 的脚本方案
 [c]继续 · s <纠偏> · q 中止   ← 需要时才拦你
 ```
 
-**人工闸门档位**（`gate_mode`，可用 `REACT_AGENT_GATE_MODE` 环境变量覆盖）：
+**人工闸门档位**（`gate_mode`，写在配置文件里）：
 
 | 档位 | 何时拦你 | 6 步任务点击数 |
 |---|---|---|
@@ -76,7 +79,7 @@ react> 帮我设计一个 Excel 转 Markdown 的脚本方案
 - `plan_model` 留空（`""`）或不配置 → 计划阶段自动回落到 `model`，行为与旧版一致。
 - 配置后，循环仅在 `action_name == "plan"` 时调用 `plan_model` 客户端，其余（`think` / `act` / `observe` / `verify`）一律用 `model`。
 - 推理模型的 `reasoning_content` 仅用于流式展示（`show_reasoning`），**不会进入上下文账本**，因此不会污染消息窗口、不会撑大上下文。
-- 也可用环境变量 `REACT_AGENT_PLAN_MODEL` 覆盖文件配置。
+- 计划模型同样写在配置文件里（`plan_model`），没有对应的环境变量。
 
 ## 工作原理
 
@@ -201,7 +204,7 @@ uv run python tools/cache_probe.py    # 离线缓存探针：改造前/后逐字
   `running`——刷新页面即可（会走 `/api/state` 重建）。
 - **默认闸门档位是 `auto`**：只在 OBSERVE 判缺陷/不通过、最终验收时拦你，计划不再无条件打断。
   需要「先看计划再开跑」就把 `gate_mode` 设为 `plan`（Web 端在侧栏或设置里切换，CLI 走配置或
-  `REACT_AGENT_GATE_MODE` 环境变量）。注意 `auto` 档下 Web 端闸门弹出后仍有 30s 倒计时自动放行。
+  配置文件里的 `gate_mode`）。注意 `auto` 档下 Web 端闸门弹出后仍有 30s 倒计时自动放行。
 - **`[EXEC:]` 默认不执行**：`enable_shell_exec` / `enable_file_write` 默认关闭，
   开启后 agent 才能真正跑命令、写文件（写盘范围受 `work_dir` 约束）。
 - **压缩看 token 预算，不看条数**：`max_context_tokens`（默认 200000）是压缩阈值。
@@ -222,7 +225,8 @@ uv run python tools/cache_probe.py    # 离线缓存探针：改造前/后逐字
 react-agent/
 ├── main.py                  # CLI 入口（REPL + --bind/--smoke/--smoke-live）
 ├── mcp_server.py            # MCP server
-├── config*.example.json     # 配置模板（真实 config*.json 被 .gitignore 排除）
+├── config.example.json      # 配置模板（单家接入）
+├── config.providers.example.json  # 配置模板（多家接入 + active_provider）
 ├── react/                   # 核心包
 │   ├── loop.py              # ReActLoop 五阶段状态机
 │   ├── model.py             # OpenAI 兼容客户端 + Mock

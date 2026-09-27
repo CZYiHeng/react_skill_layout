@@ -33,7 +33,9 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from .action import ACTION_NAMES
-from .config import ConfigError, load_config, resolve_config_path
+from .config import (PROVIDER_FIELDS, ConfigError, active_provider_name,
+                     load_config, normalize_providers, resolve_config_path,
+                     resolve_provider)
 from .service import (AgentEvent, EventRenderer, QueueControl, ReactService,
                       resolve_work_dir)
 from .model import OpenAIClient
@@ -105,6 +107,14 @@ def _binds(registry) -> dict:
     return {n: bool(registry.get(n).bound) for n in ACTION_NAMES}
 
 
+def _effective_model(cfg: dict) -> str:
+    """生效的模型名；配置有问题时返回空串而不是让接口 500（前端只需显示）。"""
+    try:
+        return resolve_provider(cfg, "act").get("model", "")
+    except ConfigError:
+        return ""
+
+
 def _run_task(sess: Session, task: str, cfg: dict, allow_exec: bool | None,
               max_rounds: int | None, skills_dir: str | None,
               gate_mode: str | None = None, work_dir: str | None = None,
@@ -163,7 +173,10 @@ async def api_session(request: Request) -> JSONResponse:
         "binds": _binds(registry),
         "warnings": list(getattr(registry, "warnings", [])),
         "config": {
-            "model": cfg.get("model"),
+            # model 取**生效 provider** 的，不再是顶层字段——多 provider 时
+            # 顶层那份可能是空占位，前端显示的就是错的
+            "model": _effective_model(cfg),
+            "active_provider": active_provider_name(cfg),
             "max_rounds": cfg.get("max_rounds"),
             "shell": bool(cfg.get("enable_shell_exec")),
             "file_write": bool(cfg.get("enable_file_write")),
@@ -376,9 +389,9 @@ def _run_review(cfg: dict, markdown: str, base_dir: Path) -> str:
                 skill_texts.append(f"### {skill_dir.name.upper()} SKILL.md\n{sk.read_text(encoding='utf-8')}")
     skills_block = "\n\n".join(skill_texts)
 
-    # 走 active_profile：多档案部署下顶层 base_url/api_key 常是空占位，
+    # 走统一解析器：多 provider 部署下顶层 base_url/api_key 常是空占位，
     # 直接用顶层字段会打到错端点（或空 key）。审查与推理必须用同一份凭据。
-    prof = _active_profile_cfg(cfg)
+    prof = resolve_provider(cfg, "act")
     client = OpenAIClient(
         prof.get("base_url", ""), prof.get("api_key", ""),
         prof.get("model", ""), 300,
@@ -426,18 +439,6 @@ def _run_review(cfg: dict, markdown: str, base_dir: Path) -> str:
     return resp.text
 
 
-def _active_profile_cfg(cfg: dict) -> dict:
-    profiles = cfg.get("profiles") or []
-    active = cfg.get("active_profile")
-    for p in profiles:
-        if p.get("name") == active:
-            return p
-    return {
-        "base_url": cfg.get("base_url", ""),
-        "api_key": cfg.get("api_key", ""),
-        "model": cfg.get("model", ""),
-    }
-
 async def api_reset(request: Request) -> JSONResponse:
     """清空会话上下文（不销毁会话）。如果有任务在跑，先中止再清。"""
     body = await _json_body(request)
@@ -461,8 +462,9 @@ async def api_reset(request: Request) -> JSONResponse:
 # 配置文件读写（页面上改 config.json，下个任务 _load_cfg 重读即生效）
 # ---------------------------------------------------------------------------
 #: 允许页面修改的字段白名单 + 类型。不在表中的字段不会被写入（防止污染）。
+#: 注意：**接入配置（providers / active_provider）不在这里**——它们是嵌套结构，
+#: 由 api_config_put 单独校验后整体写入，不能按标量强转。
 CONFIG_FIELDS: dict[str, type] = {
-    "model": str, "base_url": str, "api_key": str,
     "plan_model": str, "plan_timeout_sec": int,
     "max_rounds": int, "step_timeout_sec": int, "show_reasoning": bool,
     "max_context_tokens": int, "exec_timeout_sec": int,
@@ -470,9 +472,9 @@ CONFIG_FIELDS: dict[str, type] = {
     "sandbox_shell": bool, "sandbox_integrity_low": bool,
     "shell_backend": str,
     "gate_mode": str, "work_dir": str, "allow_outside_work_dir": bool,
-    "active_profile": str,
 }
-CONFIG_REQUIRED = ("base_url", "api_key", "model")
+#: 接入配置字段：单独处理，合并后再整体校验一次（缺 key 就不让写）。
+CONFIG_PROVIDER_FIELDS = ("providers", "active_provider")
 
 
 async def api_config_get(request: Request) -> JSONResponse:
@@ -512,17 +514,37 @@ async def api_config_put(request: Request) -> JSONResponse:
         else:
             current[key] = str(val)
 
-    # profiles 是数组，不在类型白名单里，单独保存
-    if "profiles" in body:
-        val = body["profiles"]
-        if isinstance(val, list):
-            current["profiles"] = val
-        else:
-            return JSONResponse({"error": "字段 profiles 应为数组"}, status_code=400)
+    # 接入配置：嵌套结构，单独校验后整体覆盖（不做标量强转）
+    if "providers" in body:
+        val = body["providers"]
+        if not isinstance(val, dict) or not val:
+            return JSONResponse({"error": "字段 providers 应为非空对象"}, status_code=400)
+        for name, prof in val.items():
+            if not isinstance(prof, dict):
+                return JSONResponse(
+                    {"error": f"providers.{name} 应为对象"}, status_code=400)
+            unknown = [k for k in prof if k not in PROVIDER_FIELDS]
+            if unknown:
+                return JSONResponse(
+                    {"error": f"providers.{name} 含未知字段：{', '.join(unknown)}；"
+                              f"可用：{', '.join(PROVIDER_FIELDS)}"},
+                    status_code=400,
+                )
+        current["providers"] = val
+    if "active_provider" in body:
+        current["active_provider"] = str(body["active_provider"])
 
-    for key in CONFIG_REQUIRED:
-        if not str(current.get(key, "")).strip():
-            return JSONResponse({"error": f"{key} 不能为空"}, status_code=400)
+    # 写盘前用**同一个解析器**校验一次生效 provider：缺 key/端点/模型就拒写，
+    # 免得把一份启动即报错的配置落盘（页面改配置最常见的翻车方式）。
+    if not normalize_providers(current):
+        return JSONResponse(
+            {"error": "配置里没有任何模型接入：请提供 providers 或顶层 base_url/api_key/model"},
+            status_code=400,
+        )
+    try:
+        resolve_provider(current, "act")
+    except ConfigError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
 
     try:
         path.write_text(json.dumps(current, ensure_ascii=False, indent=2) + "\n",

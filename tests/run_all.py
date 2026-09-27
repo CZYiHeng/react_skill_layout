@@ -44,7 +44,7 @@ def run_smoke(live: bool, skills_dir: Path, base_dir: Path,
     show_reasoning = True
     cfg = None
     if live:
-        from react.config import load_config, resolve_config_path
+        from react.config import load_config, resolve_config_path, resolve_provider
 
         cfg = load_config(config_path or resolve_config_path(base_dir)).values
         show_reasoning = cfg["show_reasoning"]
@@ -56,8 +56,10 @@ def run_smoke(live: bool, skills_dir: Path, base_dir: Path,
         render.warn(w)
 
     if live:
-        model = OpenAIClient(cfg["base_url"], cfg["api_key"], cfg["model"],
-                             cfg["step_timeout_sec"])
+        # 走统一解析器：不再直接读顶层字段（多 provider 时那是空占位）
+        prof = resolve_provider(cfg, "act")
+        model = OpenAIClient(prof["base_url"], prof["api_key"], prof["model"],
+                             int(prof.get("timeout_sec", 120)))
         task = "用一句话说明 ReAct 循环中 OBSERVE 步骤的作用。"
     else:
         # 首轮 OBSERVE 故意判缺陷（验证修正回路），首轮 VERIFY 故意不通过（验证验收回路）
@@ -88,6 +90,7 @@ def run_smoke(live: bool, skills_dir: Path, base_dir: Path,
     failures += C.check_cache_prefix()
     failures += C.check_token_budget()
     failures += C.check_pressure_estimate()
+    failures += C.check_provider_config()
     failures += C.check_session_memory(base_dir)
     failures += C.check_tool_window()
     failures += C.check_sandbox_nested()

@@ -380,6 +380,108 @@ def check_token_budget() -> list[str]:
     return failures
 
 
+def check_provider_config() -> list[str]:
+    """模型接入只有一处解析：providers 形状、active_provider 选择、旧形状兼容、缺字段报错。
+
+    背景：此前"取生效接入"的逻辑被写了三遍（service._active_profile、
+    webapi._active_profile_cfg、以及各处直接读顶层字段），其中 webapi 那份漏了
+    timeout_sec；顶层 base_url/api_key/model 与 profiles[] 又是两套并列真相源。
+    本断言锁死"只有一个解析器"这一契约。
+    """
+    from react.config import (ConfigError, active_provider_name,
+                              normalize_providers, resolve_provider)
+
+    failures: list[str] = []
+
+    def expect_error(cfg, label):
+        try:
+            resolve_provider(cfg, "act")
+        except ConfigError:
+            return
+        failures.append(f"{label}：应当报错却通过了")
+
+    # 1) 新形状：多家 + active_provider
+    cfg = {
+        "active_provider": "ds",
+        "providers": {
+            "ds": {"base_url": "https://a", "api_key": "ka", "model": "m-a", "timeout_sec": 11},
+            "km": {"base_url": "https://b", "api_key": "kb", "model": "m-b"},
+        },
+        "step_timeout_sec": 99,
+    }
+    eff = resolve_provider(cfg, "act")
+    if eff["model"] != "m-a" or eff["base_url"] != "https://a" or eff["timeout_sec"] != 11:
+        failures.append(f"active_provider 未生效：{eff}")
+    if active_provider_name(cfg) != "ds":
+        failures.append("active_provider_name 未返回 ds")
+    # 未给 timeout_sec 的 provider 回落到 step_timeout_sec
+    cfg["active_provider"] = "km"
+    if resolve_provider(cfg, "act")["timeout_sec"] != 99:
+        failures.append("provider 未继承 step_timeout_sec 作为默认超时")
+
+    # 2) 多家却没指定 active_provider → 必须报错（避免"改了文件不知生效谁"）
+    expect_error({"providers": {"a": {"base_url": "x", "api_key": "k", "model": "m"},
+                                "b": {"base_url": "y", "api_key": "k", "model": "m"}}},
+                 "多家未指定 active_provider")
+    # active_provider 指向不存在的名字 → 必须报错
+    expect_error({"active_provider": "nope",
+                  "providers": {"a": {"base_url": "x", "api_key": "k", "model": "m"}}},
+                 "active_provider 指向不存在")
+    # 生效 provider 缺 api_key → 必须报错（而不是拿空 key 去请求）
+    expect_error({"providers": {"a": {"base_url": "x", "model": "m"}}},
+                 "生效 provider 缺 api_key")
+    # 唯一 provider 时可以省略 active_provider（不必强制写）
+    one = resolve_provider({"providers": {"solo": {"base_url": "x", "api_key": "k",
+                                                   "model": "m"}}}, "act")
+    if one["model"] != "m":
+        failures.append("只有一个 provider 时不应要求 active_provider")
+
+    # 3) 旧形状兼容：profiles 数组
+    legacy_arr = {
+        "active_profile": "old",
+        "profiles": [{"name": "old", "base_url": "https://old", "api_key": "ko",
+                      "model": "m-old", "timeout_sec": 7}],
+    }
+    eff = resolve_provider(legacy_arr, "act")
+    if eff["model"] != "m-old" or eff["timeout_sec"] != 7:
+        failures.append(f"旧 profiles 数组未兼容：{eff}")
+
+    # 4) 最旧形状兼容：顶层三件套
+    legacy_top = {"base_url": "https://top", "api_key": "kt", "model": "m-top",
+                  "step_timeout_sec": 33}
+    eff = resolve_provider(legacy_top, "act")
+    if eff["model"] != "m-top" or eff["base_url"] != "https://top" or eff["timeout_sec"] != 33:
+        failures.append(f"旧顶层三件套未兼容：{eff}")
+
+    # 5) 新形状优先于旧的同名字段（两套并存时不许含糊）
+    both = {
+        "base_url": "https://legacy", "api_key": "kl", "model": "m-legacy",
+        "active_provider": "n",
+        "providers": {"n": {"base_url": "https://new", "api_key": "kn", "model": "m-new"}},
+    }
+    if resolve_provider(both, "act")["base_url"] != "https://new":
+        failures.append("providers 与顶层并存时应以 providers 为准")
+
+    # 6) 计划阶段：只换模型，端点与 key 不变
+    plan = resolve_provider({**cfg, "active_provider": "ds",
+                             "plan_model": "m-reasoner", "plan_timeout_sec": 321}, "plan")
+    if plan["model"] != "m-reasoner" or plan["base_url"] != "https://a" \
+            or plan["api_key"] != "ka" or plan["timeout_sec"] != 321:
+        failures.append(f"plan 角色应只换 model：{plan}")
+    # plan_model 为空 → 返回空 dict，由调用方回落到 act 模型
+    if resolve_provider({**cfg, "active_provider": "ds", "plan_model": ""}, "plan"):
+        failures.append("plan_model 为空时应返回空 dict（回落到 act 模型）")
+
+    # 7) 归一函数本身：三种形状都能读出来
+    if set(normalize_providers(cfg)) != {"ds", "km"}:
+        failures.append("normalize_providers 未正确解析 providers map")
+    if set(normalize_providers(legacy_arr)) != {"old"}:
+        failures.append("normalize_providers 未正确解析 profiles 数组")
+    if set(normalize_providers(legacy_top)) != {"default"}:
+        failures.append("normalize_providers 未把顶层三件套归为 default")
+    return failures
+
+
 def check_pressure_estimate() -> list[str]:
     """压力计量：实测优先、新增部分靠估算、并用实测在线校准。"""
     failures: list[str] = []
@@ -562,8 +664,8 @@ def check_model_error_policy() -> list[str]:
         except ModelError as e:
             if "不重试" not in str(e):
                 failures.append("401 报错未标注「不重试」")
-            if "REACT_AGENT_API_KEY" not in str(e):
-                failures.append("401 报错缺少排查提示")
+            if "providers" not in str(e):
+                failures.append("401 报错缺少排查提示（应指向配置文件的 providers）")
         if counter["n"] != 1:
             failures.append(f"401 仍被重试: 实际调用 {counter['n']} 次")
 

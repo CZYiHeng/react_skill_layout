@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Callable
 
 from .action import ActionRegistry
+from .config import resolve_provider
 from .context import SessionContext
 from .executor import Executor, LocalExecutor
 from .loop import ReActLoop
@@ -414,38 +415,30 @@ class ReactService:
         )
 
     def _active_profile(self) -> dict:
-        """返回当前生效的模型 profile。优先 active_profile 指定的档案，否则用顶层字段。"""
-        profiles = self.cfg.get("profiles") or []
-        active = self.cfg.get("active_profile")
-        for p in profiles:
-            if p.get("name") == active:
-                return p
-        # 兼容旧配置：没有 profiles 时用顶层字段
-        return {
-            "base_url": self.cfg.get("base_url", ""),
-            "api_key": self.cfg.get("api_key", ""),
-            "model": self.cfg.get("model", ""),
-            "timeout_sec": self.cfg.get("step_timeout_sec", 120),
-        }
+        """生效 provider（含 model / timeout_sec）。
+
+        已收敛为调用 `react.config.resolve_provider`——此前本文件与 webapi.py
+        各写了一份"profiles 优先、否则回退顶层字段"的逻辑，两份还不完全一致
+        （webapi 那份漏了 timeout_sec）。现在只此一处语义。
+        """
+        return resolve_provider(self.cfg, "act")
 
     def build_model(self, role: str = "act") -> OpenAIClient | None:
         """构造模型客户端。
 
-        role="act"：执行/思考/观察/验证等阶段（当前 profile，超时 step_timeout_sec）。
-        role="plan"：计划阶段专用（plan_model，未配置则回退返回 None，由循环层回落到 act 模型；
-                     超时 plan_timeout_sec，默认更长以容纳推理模型）。
+        role="act"：执行/思考/观察/验证等阶段（当前 provider，超时 timeout_sec）。
+        role="plan"：计划阶段专用（顶层 `plan_model`，未配置则返回 None，由循环层
+                     回落到 act 模型；超时 plan_timeout_sec，默认更长以容纳推理模型）。
         """
-        prof = self._active_profile()
         if role == "plan":
-            name = self.cfg.get("plan_model") or prof.get("model", "")
-            if not self.cfg.get("plan_model"):
+            prof = resolve_provider(self.cfg, "plan")
+            if not prof:
                 return None  # 未配置计划模型 → 回落到 act 模型
-            timeout = int(self.cfg.get("plan_timeout_sec", 300))
         else:
-            name = prof.get("model", "")
-            timeout = int(prof.get("timeout_sec") or self.cfg.get("step_timeout_sec", 120))
+            prof = self._active_profile()
         return OpenAIClient(
-            prof.get("base_url", ""), prof.get("api_key", ""), name, timeout,
+            prof.get("base_url", ""), prof.get("api_key", ""),
+            prof.get("model", ""), int(prof.get("timeout_sec", 120)),
         )
 
     def build_runtime(

@@ -439,7 +439,7 @@ export default function App() {
         onReview={() => setView('review')}
         totalTokens={state.totalTokens}
         onSwitchModel={async (name) => {
-          await api.saveConfig({ active_profile: name })
+          await api.saveConfig({ active_provider: name })
           const d = await api.getConfig()
           dispatch({ type: 'config_update', config: api.normalizeConfig(d.config || {}) })
         }}

@@ -1,12 +1,21 @@
-"""统一配置加载：文件 + 环境变量覆盖 + 默认值 + 安全告警。
+"""统一配置加载：单一文件 + 默认值 + 安全告警 + **唯一的模型接入解析器**。
 
 设计要点：
 - **单一真相源**：CLI（main.py）、MCP（mcp_server.py）、Web（webapi.py）共用本模块，
   消除此前各写一份的重复实现（其中 main.py 版本直接 `SystemExit(1)` 杀进程，属库行为越界）。
+- **接入配置只有一处**：`providers` 映射 + `active_provider`。此前顶层
+  `base_url/api_key/model` 与 `profiles[]` 是两套并列的真相源，导致同一套
+  「取生效接入」的逻辑被写了三遍（service._active_profile、webapi._active_profile_cfg、
+  以及各处直接读顶层字段），其中 webapi 那份还漏了 timeout_sec。现在一律走
+  本模块的 `resolve_provider`。
+- **key 只从文件读**（显式决定）：删除 `REACT_AGENT_API_KEY` 等凭据类环境变量覆盖，
+  避免"文件一套、环境变量一套"的隐性优先级。启动时对明文 key 给出告警。
 - **错误语义收敛**：一切加载失败抛 `ConfigError`，由调用方决定转成退出码（CLI）还是工具错误（MCP/Web），
   库本身不再决定进程生死。
 - **占位符判定放宽**：模板里 api_key 的占位写法有多种（`<在此填入你的 key>` / `<在此填入你的 api_key>`），
   统一用"形如 <...> 或含 <在此填入"判定，避免占位符漏网被当成真 key 发给服务商。
+- **向后兼容**：旧的顶层 `base_url/api_key/model` 与旧 `profiles[]` 数组仍可读，
+  会被自动归一成 providers 形状，存量配置不需要手工迁移。
 """
 
 from __future__ import annotations
@@ -16,19 +25,18 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# 环境变量覆盖（优先级高于文件）
-ENV_MAP = {
-    "api_key": "REACT_AGENT_API_KEY",
-    "base_url": "REACT_AGENT_BASE_URL",
-    "model": "REACT_AGENT_MODEL",
-    "plan_model": "REACT_AGENT_PLAN_MODEL",
-    "gate_mode": "REACT_AGENT_GATE_MODE",
-    "work_dir": "REACT_AGENT_WORK_DIR",
-    "allow_outside_work_dir": "REACT_AGENT_ALLOW_OUTSIDE_WORK_DIR",
-}
+# 环境变量：只保留"去哪里找配置/技能"，不再覆盖接入类字段（key/base_url/model）。
+# 理由（用户显式决定）：key 只从文件读，任何"环境变量盖住文件"的机制都会重新引入
+# 两套真相源与隐性优先级。
+ENV_CONFIG_PATH = "REACT_AGENT_CONFIG"
+ENV_SKILLS_DIR = "REACT_AGENT_SKILLS_DIR"
 
-# 必填字段（缺一即报错）
-REQUIRED_KEYS = ("base_url", "api_key", "model")
+#: 一份 provider 必须提供的字段（用于校验**生效的那一个**，而不是顶层）。
+PROVIDER_REQUIRED = ("base_url", "api_key", "model")
+
+#: provider 里允许出现的字段；未知字段直接报错而不是静默忽略——
+#: 拼错的 `base_ur` 会让人对着一个"看起来配了却连不上"的文件排查半天。
+PROVIDER_FIELDS = ("base_url", "api_key", "model", "timeout_sec")
 
 # 默认值（config 未显式给出时补齐）
 DEFAULTS: dict = {
@@ -97,16 +105,114 @@ def is_placeholder(value: object) -> bool:
 
 def resolve_config_path(base_dir: Path) -> Path:
     """config 路径：默认 base_dir/config.json，可由环境变量 REACT_AGENT_CONFIG 覆盖。"""
-    return Path(os.environ.get("REACT_AGENT_CONFIG", str(base_dir / "config.json")))
+    return Path(os.environ.get(ENV_CONFIG_PATH, str(base_dir / "config.json")))
+
+
+def normalize_providers(cfg: dict) -> dict[str, dict]:
+    """把配置里的接入部分归一成 `{名字: provider}`，兼容三种历史形状。
+
+    1. 新形状：`providers: { name: {base_url, api_key, model, timeout_sec} }`
+    2. 旧形状：`profiles: [ {name, base_url, api_key, model, timeout_sec}, ... ]`
+    3. 最旧形状：顶层 `base_url` / `api_key` / `model`（单家）
+
+    三条路径产出同一结构，所以上层只需要认识一种形状。返回空 dict 表示配置里
+    没有任何可用接入——由调用方决定报错文案（不同入口措辞不同）。
+    """
+    out: dict[str, dict] = {}
+
+    providers = cfg.get("providers")
+    if isinstance(providers, dict):
+        for name, val in providers.items():
+            if isinstance(val, dict):
+                out[str(name)] = {k: val[k] for k in PROVIDER_FIELDS if k in val}
+
+    # 旧 profiles 数组（新形状已给出同名项时不覆盖）
+    profiles = cfg.get("profiles")
+    if isinstance(profiles, list):
+        for p in profiles:
+            if not isinstance(p, dict):
+                continue
+            name = str(p.get("name") or "").strip()
+            if name and name not in out:
+                out[name] = {k: p[k] for k in PROVIDER_FIELDS if k in p}
+
+    # 最旧的顶层三件套
+    if any(cfg.get(k) for k in ("base_url", "api_key", "model")):
+        top = {k: cfg[k] for k in ("base_url", "api_key", "model") if cfg.get(k)}
+        top.setdefault("timeout_sec", cfg.get("step_timeout_sec", DEFAULTS["step_timeout_sec"]))
+        fallback = str(cfg.get("active_provider") or cfg.get("active_profile") or "default")
+        out.setdefault(fallback, top)
+    return out
+
+
+def active_provider_name(cfg: dict, providers: dict[str, dict] | None = None) -> str:
+    """生效的 provider 名：`active_provider`（兼容旧 `active_profile`）→ 唯一项 → 报错。
+
+    显式指定的名字**必须存在**，否则直接报错——哪怕配置里只有一家。否则
+    `active_provider: "dseek"` 这种拼写错误会被"唯一项兜底"静默吞掉，
+    用户以为自己指定了哪家、实际用的是另一家。
+    """
+    provs = providers if providers is not None else normalize_providers(cfg)
+    name = str(cfg.get("active_provider") or cfg.get("active_profile") or "").strip()
+    if name:
+        if name in provs:
+            return name
+        raise ConfigError(
+            f"active_provider={name!r} 在配置里不存在；可选：{', '.join(sorted(provs)) or '（无）'}"
+        )
+    if len(provs) == 1:
+        return next(iter(provs))
+    raise ConfigError(
+        f"配置了 {len(provs)} 个 provider 却没有 active_provider，"
+        f"请显式指定其中之一：{', '.join(sorted(provs))}"
+    )
+
+
+def resolve_provider(cfg: dict, role: str = "act") -> dict:
+    """**唯一的接入解析器**：返回生效 provider（含 model / timeout_sec）。
+
+    role="act"  → 执行/思考/观察/验证等阶段
+    role="plan" → 计划阶段；顶层 `plan_model` 非空时**只换 model**，其余字段
+                  （base_url/api_key）仍复用当前 provider，超时用 `plan_timeout_sec`；
+                  `plan_model` 为空则返回 `{}`，由调用方回落到 act 模型。
+    """
+    provs = normalize_providers(cfg)
+    if not provs:
+        raise ConfigError("配置里没有任何模型接入：请提供 providers 或顶层 base_url/api_key/model")
+    name = active_provider_name(cfg, provs)
+    prof = dict(provs[name])
+    # 未显式给 timeout_sec 时沿用全局 `step_timeout_sec`——它是这些 provider 之外的
+    # 通用旋钮，此前只在"顶层三件套"那条路径被继承，providers map 里写了却没超时的
+    # 那一项会莫名回落到硬编码 120，与用户的 step_timeout_sec 不一致。
+    prof.setdefault("timeout_sec", cfg.get("step_timeout_sec", DEFAULTS["step_timeout_sec"]))
+
+    for key in PROVIDER_REQUIRED:
+        val = prof.get(key)
+        if not val or is_placeholder(val):
+            raise ConfigError(
+                f"provider {name!r} 字段缺失：{key}（请在配置文件的 providers.{name} 里填写）"
+            )
+
+    if role == "plan":
+        plan_model = str(cfg.get("plan_model") or "").strip()
+        if not plan_model:
+            return {}
+        prof["model"] = plan_model
+        prof["timeout_sec"] = int(cfg.get("plan_timeout_sec", DEFAULTS["plan_timeout_sec"]))
+    return prof
 
 
 def security_warnings(cfg: dict, path: Path) -> list[str]:
-    """明文密钥等安全提示（供调用方打印，不在此处直接输出）。"""
+    """安全提示：明文密钥、以及"配了多家却没说用哪家"这类易踩形态。"""
     warns: list[str] = []
-    if not is_placeholder(cfg.get("api_key")) and not os.environ.get(ENV_MAP["api_key"]):
+    provs = normalize_providers(cfg)
+    plaintext = sorted(n for n, p in provs.items()
+                       if p.get("api_key") and not is_placeholder(p["api_key"]))
+    if plaintext:
         warns.append(
-            f"api_key 来自 {path.name} 明文。建议改用环境变量 REACT_AGENT_API_KEY，"
-            f"并将该配置文件加入 .gitignore；若曾提交/共享过该文件，请到服务商处轮换 key。"
+            f"api_key 来自 {path.name} 明文（provider: {', '.join(plaintext)}）。"
+            f"本项目显式设定 key 只从文件读，请确认该文件已被 .gitignore 排除；"
+            f"若曾提交/共享过，请到服务商处轮换该 key。"
         )
     return warns
 
@@ -127,14 +233,15 @@ class LoadedConfig:
 
 
 def load_config(path: Path) -> LoadedConfig:
-    """加载配置：读文件 → 环境变量覆盖 → 校验必填 → 补齐默认值。
+    """加载配置：读文件 → 校验生效 provider → 补齐默认值 → 安全提示。
 
-    异常：文件缺失/损坏/必填字段为空或占位符 → 抛 ConfigError。
+    异常：文件缺失/损坏、或**生效 provider** 的必填字段为空/占位符 → 抛 ConfigError。
+    注意校验对象是"生效的那一个 provider"，不再是顶层字段——顶层的
+    base_url/api_key/model 只是旧配置的兼容形状，多 provider 部署下它们可以是空的。
     """
     if not path.is_file():
         raise ConfigError(
-            f"{path.name} 缺失：请复制 config.example.json 为 {path.name}，"
-            f"或用环境变量 {', '.join(ENV_MAP.values())} 提供"
+            f"{path.name} 缺失：请复制 config.example.json 为 {path.name}"
         )
     try:
         cfg = json.loads(path.read_text(encoding="utf-8"))
@@ -143,18 +250,14 @@ def load_config(path: Path) -> LoadedConfig:
     if not isinstance(cfg, dict):
         raise ConfigError(f"{path.name} 损坏：顶层应为 JSON 对象")
 
-    # 环境变量覆盖：允许不落地明文 key（优先级高于文件）
-    for cfg_key, env_key in ENV_MAP.items():
-        val = os.environ.get(env_key)
-        if val:
-            cfg[cfg_key] = val
-
-    for key in REQUIRED_KEYS:
-        if not cfg.get(key) or is_placeholder(cfg.get(key)):
-            raise ConfigError(
-                f"{path.name} 字段缺失：{key}"
-                f"（可设环境变量 {ENV_MAP[key]} 或填写 {path.name}）"
-            )
+    # 显式不读环境变量里的接入信息（key/base_url/model）：key 只从文件读。
+    # 因此这里没有任何 os.environ 覆盖——单一来源，避免隐性优先级。
+    if not normalize_providers(cfg):
+        raise ConfigError(
+            f"{path.name} 里没有模型接入：请提供 providers（推荐）"
+            f"或顶层 base_url/api_key/model"
+        )
+    resolve_provider(cfg, "act")   # 校验生效 provider 的必填字段，缺了就抛
 
     for key, default in DEFAULTS.items():
         cfg.setdefault(key, default)

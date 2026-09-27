@@ -29,10 +29,10 @@ REM 本机若设置了代理，访问 127.0.0.1 时必须绕开
 set "NO_PROXY=127.0.0.1,localhost"
 set "no_proxy=127.0.0.1,localhost"
 
-REM ---- 配置档案：默认 config.deepseek.json ----
-REM 想切回默认档案：把下一行的文件名改成 config.json
-REM 想临时指定：先 set REACT_AGENT_CONFIG=config.xxx.json 再运行本脚本
-if "%REACT_AGENT_CONFIG%"=="" set "REACT_AGENT_CONFIG=%~dp0config.deepseek.json"
+REM ---- 配置文件：默认 config.json ----
+REM 多家接入都写在同一个文件的 providers 里，用 active_provider 选生效的那家
+REM 所以不再需要换一家换一个文件。想指定别的路径：先 set REACT_AGENT_CONFIG=config.xxx.json 再运行本脚本
+if "%REACT_AGENT_CONFIG%"=="" set "REACT_AGENT_CONFIG=%~dp0config.json"
 set "CFG=%REACT_AGENT_CONFIG%"
 
 if /i "%MODE%"=="help"   goto :usage
@@ -177,7 +177,7 @@ exit /b 1
 if not exist "%CFG%" (
     echo [i] 缺少 %CFG%，正在从 config.example.json 复制 ...
     copy /y "config.example.json" "%CFG%" >nul
-    echo [x] 已生成 %CFG%，请用记事本打开填入 base_url / api_key 后重新运行。
+    echo [x] 已生成 %CFG%，请用记事本打开，在 providers 里填入 base_url / api_key / model 后重新运行。
     exit /b 1
 )
 "%PY%" -c "import json,sys;d=json.load(open(r'%CFG%',encoding='utf-8'));v=str(d.get('api_key',''))+str(d.get('base_url',''));sys.exit(0 if v.strip() and chr(60) not in v else 1)" >nul 2>&1

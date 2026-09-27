@@ -50,10 +50,10 @@ export default function Sidebar({
         {config ? (
           <div className="field">
             <label>模型</label>
-            <select value={config.active_profile || ''} onChange={(e) => onSwitchModel?.(e.target.value)}>
-              <option value="">默认（{config.model}）</option>
-              {(config.profiles || []).map((p) => (
-                <option key={p.name} value={p.name}>{p.name}</option>
+            <select value={config.active_provider || ''} onChange={(e) => onSwitchModel?.(e.target.value)}>
+              <option value="">默认（{config.model || '未配置'}）</option>
+              {Object.keys(config.providers || {}).map((name) => (
+                <option key={name} value={name}>{name}</option>
               ))}
             </select>
           </div>

@@ -78,11 +78,39 @@ export function saveConfig(config) {
  * 合并输出，两种字段都保留——Sidebar 徽章读精简字段、store 读文件字段均可用。
  * 精简字段优先保留已有值（避免 /api/session 结构被误映射为 false）。
  */
+/**
+ * 把配置里的接入部分归一成 `{名字: provider}`（纯函数，不修改入参）。
+ * 兼容三种历史形状：providers map / 旧 profiles 数组 / 最旧的顶层三件套。
+ * 与后端 `react/config.py: normalize_providers` 同语义——两边各写一份是这个项目
+ * 踩过的坑（同一套"取生效接入"的逻辑曾被写三遍且互不一致）。
+ */
+export function providersOf(cfg) {
+  const out = { ...(cfg?.providers || {}) }
+  for (const p of cfg?.profiles || []) {
+    if (p?.name && !out[p.name]) {
+      const { name, ...rest } = p
+      out[name] = rest
+    }
+  }
+  const legacyName = cfg?.active_provider || cfg?.active_profile || 'default'
+  if (Object.keys(out).length === 0 && cfg?.base_url) {
+    out[legacyName] = {
+      base_url: cfg.base_url || '',
+      api_key: cfg.api_key || '',
+      model: cfg.model || '',
+      timeout_sec: cfg.step_timeout_sec ?? 120,
+    }
+  }
+  return out
+}
+
 export function normalizeConfig(full) {
   const cfg = { ...(full || {}) }
   if (!('shell' in cfg)) cfg.shell = !!cfg.enable_shell_exec
   if (!('file_write' in cfg)) cfg.file_write = !!cfg.enable_file_write
   if (!('sandbox' in cfg)) cfg.sandbox = !!cfg.sandbox_shell
+  cfg.providers = providersOf(cfg)
+  cfg.active_provider = cfg.active_provider || cfg.active_profile || ''
   return cfg
 }
 

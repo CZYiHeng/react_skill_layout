@@ -18,7 +18,8 @@ for _stream in (sys.stdout, sys.stderr, sys.stdin):
 from rich.console import Console
 
 from react.action import ACTION_NAMES, ActionRegistry
-from react.config import ConfigError, load_config as load_config_module, resolve_config_path
+from react.config import (ConfigError, active_provider_name, load_config as load_config_module,
+                          resolve_config_path, resolve_provider)
 from react.render import RichRenderer
 from react.service import CliControl, ReactService
 from tests.run_all import run_smoke
@@ -57,15 +58,16 @@ def _print_first_run_guide(path: Path, console: Console) -> None:
     console.print(f"[red]配置缺失[/red]：找不到 {path}")
     console.print("[dim]看起来是第一次运行，需要先准备模型配置"
                   "（OpenAI 兼容端点三件套：base_url / api_key / model）。[/dim]")
-    console.print("\n[bold]任选一种方式：[/bold]")
+    console.print("\n[bold]两步搞定：[/bold]")
     if example.is_file():
-        console.print(f"  [cyan]1) 复制模板再填 key[/cyan]\n"
-                      f"     copy {example.name} {path.name}\n"
-                      f"     然后编辑 {path.name} 里的 api_key")
+        console.print(f"  [cyan]1) 复制模板[/cyan]\n"
+                      f"     copy {example.name} {path.name}")
     else:
         console.print(f"  [cyan]1) 新建 {path.name}[/cyan]（参考 config.example.json）")
-    console.print(f"  [cyan]2) 用环境变量（推荐，key 不落盘）[/cyan]\n"
-                  f"     $env:REACT_AGENT_API_KEY=\"sk-xxx\"")
+    console.print(f"  [cyan]2) 编辑 providers 填 key[/cyan]\n"
+                  f"     在 {path.name} 的 providers.<名字> 里填 base_url / api_key / model，\n"
+                  f"     用 active_provider 指定生效的那一家（多家并存见 "
+                  f"config.providers.example.json）")
     console.print(f"\n[dim]配置路径：{path}"
                   f"（可用环境变量 REACT_AGENT_CONFIG 覆盖）[/dim]")
 
@@ -146,7 +148,11 @@ def cmd_repl(skills_dir: Path, console: Console) -> None:
         render.warn(w)
 
     binds = " · ".join(f"{n}{'✓' if registry.get(n).bound else '✗'}" for n in ACTION_NAMES)
-    console.print(f"[bold]ReAct Agent[/bold] · {cfg['model']} · 绑定: {binds}")
+    # 横幅显示**生效 provider** 的模型与名字，而不是顶层字段——
+    # 多 provider 时顶层那份可能是空占位，显示出来就是错的
+    eff = resolve_provider(cfg, "act")
+    console.print(f"[bold]ReAct Agent[/bold] · {eff['model']}"
+                  f" · provider={active_provider_name(cfg)} · 绑定: {binds}")
     console.print(f"[dim]输入 /help 查看指令，直接输入文字开始任务[/dim]")
     console.print(f"[dim]执行器：shell={'开' if cfg['enable_shell_exec'] else '关'}"
                   f" · 文件写入={'开' if cfg['enable_file_write'] else '关'}"

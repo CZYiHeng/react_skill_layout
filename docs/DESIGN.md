@@ -14,7 +14,7 @@
 | v1.2 | THINK 驱动状态机完整落地、计划修订保留已完成前缀 | — |
 | v1.3 | OBSERVE 三值分流 + VERIFY 不通过回炉 + 验收数据流 | — |
 | **v1.4** | **① 解析失败安全默认（ESCALATE/不通过）；混合控制信号通道（原生工具调用为主 + 文本兜底）；③ 上下文窗口化；④ ACT 经 LocalExecutor 真实执行（默认关闭）；② 明文密钥治理（env 覆盖 + .gitignore）；⑧ 工具调用回写 `role=tool`；⑥ 判定文本兜底同义词（修"未通过"误判为通过的坑）；⑦ ASK 独立轮次上限（防死循环）** | ① ② ③ ④ ⑤ ⑥ ⑦ ⑧ ⑩ |
-| **v1.5** | **新增 `skills_code/` 写代码专用档案：把 `G:\skill` 的 8 字段头 / 7 规则 / req-to-code / solution-review / flow-tracer / visual-digest 方法论适配进五槽位协议；不改 `load()` 与 `G:\skill`；新增 `config.code.example.json` 与两个 CLI 便捷环境变量（`REACT_AGENT_SKILLS_DIR` / `REACT_AGENT_CONFIG`）** | 写代码 agent 需求 |
+| **v1.5** | **新增 `skills_code/` 写代码专用档案：把 `G:\skill` 的 8 字段头 / 7 规则 / req-to-code / solution-review / flow-tracer / visual-digest 方法论适配进五槽位协议；不改 `load()` 与 `G:\skill`；新增 `两个 CLI 便捷环境变量（`REACT_AGENT_SKILLS_DIR` / `REACT_AGENT_CONFIG`）** | 写代码 agent 需求 |
 | **v1.6** | **shell 执行接入 OS 级沙箱（仅 Windows）：`react/win32_sandbox.py` 用受限令牌（剥特权）+ 作业对象（kill-on-close / 禁 breakaway / 进程数上限 / 内存上限）+ 可选低完整性级别，把 agent 起的自家命令进程关进内核隔离；`sandbox_shell` 配置开关，默认关** | 市面 agent 安全范式调研后落地 |
 | **v1.7** | **① service 层（`react/service.py`）：`Renderer` 协议补全并归位、新增 `on_token` 流式钩子（修 loop.py 从未透传 on_token 的死代码）、`AgentEvent`/`EventRenderer`/`NullRenderer`/`ControlChannel`/`ReactService`，让 CLI/MCP/Web 三方共用同一套驱动；② 配置统一到 `react/config.py`（`ConfigError`，不再 SystemExit）；③ 断言迁出 `cmd_smoke`（221 行）进 `tests/`；④ 新增 Web API（`react/webapi.py`，starlette + SSE）与 React+Vite 前端（`web/`）** | 前端对话需求 + 结构优化 |
 
@@ -102,7 +102,7 @@ react-agent/
 ├── main.py              # 入口：REPL 主循环、指令解析、子命令
 ├── config.json          # 模型配置（本地文件，不入版本库）
 ├── config.example.json  # 配置模板（默认：文件写入关）
-├── config.code.example.json  # 配置模板（写代码：enable_file_write 开、shell 关）
+
 ├── react/
 │   ├── __init__.py
 │   ├── loop.py          # ReAct 主循环引擎
@@ -344,7 +344,7 @@ python main.py --skills-dir G:\react-agent\skills_code          # REPL（文件�
 python main.py --smoke    --skills-dir G:\react-agent\skills_code # 静态回归（零 API）
 ```
 
-配套 `config.code.example.json`：`enable_file_write: true`、`enable_shell_exec: false`（写码默认落文件、不跑 shell）；CLI 便捷环境变量 `REACT_AGENT_SKILLS_DIR` / `REACT_AGENT_CONFIG` 可省去每次传参（见 §5）。
+写码场景建议 `enable_file_write: true`、`enable_shell_exec: false`（落文件、不跑 shell）；CLI 便捷环境变量 `REACT_AGENT_SKILLS_DIR` / `REACT_AGENT_CONFIG` 可省去每次传参（见 §5）。
 
 **核心契约（贯穿五槽位）**：
 
@@ -497,30 +497,45 @@ class LocalExecutor:
 
 ## 5. 配置设计
 
-`config.example.json`：
+`config.example.json`（单家）：
 
 ```json
 {
-  "base_url": "https://api.kimi.com/coding/v1",
-  "api_key": "<在此填入你的 key>",
-  "model": "kimi-k2.7",
+  "active_provider": "default",
+  "providers": {
+    "default": {
+      "base_url": "https://api.deepseek.com",
+      "api_key": "<在此填入你的 api_key>",
+      "model": "deepseek-chat",
+      "timeout_sec": 120
+    }
+  },
   "max_rounds": 10,
-  "step_timeout_sec": 120,
   "show_reasoning": true,
-  "max_context_tokens": 200000,
-  "enable_shell_exec": false,
-  "enable_file_write": false,
-  "exec_timeout_sec": 30
+  "gate_mode": "auto"
 }
 ```
 
-配置字段：
+多家并存时用 `providers` 放多家、`active_provider` 选生效的那家（见
+`config.providers.example.json`）。
+
+配置字段（接入部分）：
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `base_url` / `api_key` / `model` | — | 模型接入（必填） |
+| `active_provider` | 唯一项的名字 | 生效的 provider 名；有且仅有一家时可省略。**显式写了但不存在 → 报错**（不允许静默兜底） |
+| `providers.<name>.base_url` | — | 端点地址（必填） |
+| `providers.<name>.api_key` | — | 密钥（必填） |
+| `providers.<name>.model` | — | 模型名（必填） |
+| `providers.<name>.timeout_sec` | `step_timeout_sec` | 该 provider 的单步超时 |
+
+运行时选项（与接入无关，改它们不影响生效 provider）：
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `plan_model` | `""` | 计划阶段专用模型名；**只换 model**，端点与 key 复用当前 provider。留空=计划也用当前模型 |
+| `plan_timeout_sec` | 300 | 计划阶段超时（推理模型更慢） |
 | `max_rounds` | 10 | 单任务最大轮数，超限强制退出并提示人工接管 |
-| `step_timeout_sec` | 120 | 单步模型调用超时（含重试） |
 | `show_reasoning` | true | 是否展示模型思考过程（kimi `reasoning_content`） |
 | `max_context_tokens` | 200000 | 压缩阈值（token）：用实测 usage 预估"下一次请求的压力"，超阈值才压缩一次。调大=命中更高、单次请求更大；`<=0` 取消预算（回滚开关） |
 | `enable_shell_exec` | false | 是否允许 ACT 经 `[EXEC: shell]` 真实执行命令（问题④，默认关） |
@@ -528,13 +543,22 @@ class LocalExecutor:
 | `exec_timeout_sec` | 30 | shell 执行超时 |
 | `sandbox_shell` | false | shell 执行是否套 **OS 级沙箱**（仅 Windows 生效：剥特权令牌 + 作业对象隔离，见 §4.1）；开启 `enable_shell_exec` 才有效 |
 | `sandbox_integrity_low` | false | 沙箱内是否降为低完整性级别（需把 cwd 降 IL，默认关，见 §4.1） |
-| `gate_mode` | `plan` | 人工闸门档位，见 §5.1 |
+| `gate_mode` | `auto` | 人工闸门档位，见 §5.1 |
 | `work_dir` | `""` | 写盘 / 执行命令的工作目录，仅限项目根目录内的子目录，见 §5.3 |
 
-- 启动时读取 `config.json`，缺失或字段不全 → 打印缺失项并退出；缺失字段可用环境变量兜底（见下）
-- **环境变量覆盖（问题②）**：`REACT_AGENT_API_KEY` / `REACT_AGENT_BASE_URL` / `REACT_AGENT_MODEL` 可覆盖对应字段，**优先级高于文件**。推荐用环境变量提供 key，避免明文落盘
-- **CLI 便捷环境变量（v1.5）**：`REACT_AGENT_SKILLS_DIR`（覆盖 `--skills-dir` 默认值，写码场景设 `skills_code`）、`REACT_AGENT_CONFIG`（覆盖默认配置文件路径，写码场景设 `config.code.json`）。二者仅覆盖默认值，命令行参数显式传入时优先于它们；详见 §3.9 与 `main.py`。
-- **明文密钥告警**：若 `api_key` 来自 `config.json` 明文且未用环境变量遮罩，启动时打印安全提示，并建议把 `config.json` 加入 `.gitignore`；**若文件曾被提交或共享，务必到服务商处轮换 key**
+- 启动时读取 `config.json`，缺失或**生效 provider** 字段不全 → 打印缺失项并退出
+- **接入只有一个解析器**：`react/config.py: resolve_provider()`。此前"取生效接入"的逻辑
+  被写了三遍（`service._active_profile`、`webapi._active_profile_cfg`、各处直接读顶层字段），
+  其中 webapi 那份还漏了 `timeout_sec`；顶层 `base_url/api_key/model` 与 `profiles[]`
+  又是两套并列真相源。现在 CLI / Web / MCP / 测试全部走这一个函数，形状只认 `providers`。
+- **向后兼容**：旧的 `profiles: [...]` 数组与最旧的顶层 `base_url/api_key/model`
+  仍可读，会被 `normalize_providers()` 自动归一成 providers 形状，存量配置无需手工迁移。
+- **key 只从文件读（显式决定）**：**不提供**任何凭据类环境变量
+  ——任何"环境变量盖住文件"的机制都会重新引入两套真相源与隐性优先级。
+  仅保留两个与接入无关的便捷变量：`REACT_AGENT_SKILLS_DIR`（覆盖 `--skills-dir` 默认值）、
+  `REACT_AGENT_CONFIG`（覆盖配置文件路径）；命令行参数显式传入时优先于它们。
+- **明文密钥告警**：启动时若检测到 providers 里有明文 key，打印安全提示并提醒确认
+  该文件已被 `.gitignore` 排除；**若文件曾被提交或共享，务必到服务商处轮换 key**
 - 模型调用失败（网络/限流）：重试 2 次（指数退避 1s/2s），仍失败则该步报错并允许人工 `s` 纠偏继续
   （鉴权/参数类 4xx 属永久性错误，**不重试**，立即失败并给出针对性提示）
 
@@ -584,7 +608,7 @@ class LocalExecutor:
 落到此目录后，`LocalExecutor` 原有的「目标路径必须落在 cwd 内」约束继续生效——
 所以模型即使写出 `../escape.py` 这类路径也逃不出去（已实测）。
 
-可用 `REACT_AGENT_WORK_DIR` 覆盖；Web 端状态条上有「目录」输入框，随任务下发。
+写在配置文件里（`work_dir`）；Web 端状态条上有「目录」输入框，随任务下发。
 
 ### 5.2 随时插手（暂停 / 纠偏 / 中止）
 
@@ -608,7 +632,7 @@ Web 端 `/api/control` 接受 `pause`，前端状态条在运行中显示「暂�
 `_apply_gate_if_needed()` 负责调用并把拦截原因（`_gate_reason`）透给前端展示。
 `gate is None`（`--smoke` / MCP 无头场景）时恒不拦。
 
-可用 `REACT_AGENT_GATE_MODE` 环境变量覆盖；Web 端每次发任务时可随 `gate_mode` 字段下发，
+写在配置文件里；Web 端每次发任务时可随 `gate_mode` 字段下发，
 前端状态条上有「步进 / 自动」切换。非法值回退 `step` 并告警。
 
 ---

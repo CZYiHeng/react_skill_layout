@@ -53,8 +53,8 @@ _PERMANENT_EXC_NAMES = ("AuthenticationError", "PermissionDeniedError",
                         "BadRequestError", "NotFoundError", "UnprocessableEntityError")
 _STATUS_HINT = {
     400: "请求被拒绝：多为上下文超长或消息格式问题，下调 max_context_tokens。",
-    401: "api_key 无效或已过期：检查 config.json 的 api_key / base_url，"
-         "注意环境变量 REACT_AGENT_API_KEY 会覆盖文件配置，且不同端点的 key 不通用。",
+    401: "api_key 无效或已过期：检查配置文件的 providers.<名字>.api_key 与 base_url，"
+         "注意不同端点的 key 不通用。",
     403: "无权限访问该模型或端点，确认账号已开通对应服务。",
     404: "模型名或端点路径不存在，检查 model 与 base_url（路径后缀如 /v1 不能少）。",
     422: "请求参数不合法，检查 model 名称与工具定义。",

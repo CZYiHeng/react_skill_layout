@@ -50,38 +50,45 @@ export default function SettingsModal({ onClose, onSaved, allowOutside: currentA
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }))
 
-  // 更新某个档案的字段
-  const updateProfile = (idx, field, value) => {
+  // 归一逻辑与后端/接口层共用一份（api.providersOf），避免三处各写一遍
+  const providersOf = (f) => api.providersOf(f)
+
+  // 更新某个 provider 的字段
+  const updateProvider = (name, field, value) => {
     setForm((f) => {
-      const profiles = [...(f.profiles || [])]
-      profiles[idx] = { ...profiles[idx], [field]: value }
-      return { ...f, profiles }
+      const provs = providersOf(f)
+      return { ...f, providers: { ...provs, [name]: { ...provs[name], [field]: value } } }
     })
   }
 
-  const addProfile = () => {
-    const name = prompt('新档案名称（如 deepseek / kimi / qwen）：')
+  const addProvider = () => {
+    const name = prompt('新 provider 名称（如 deepseek / kimi / qwen）：')
     if (!name) return
-    setForm((f) => ({
-      ...f,
-      profiles: [...(f.profiles || []), { name, base_url: '', api_key: '', model: '', timeout_sec: 120 }],
-    }))
+    setForm((f) => {
+      const provs = providersOf(f)
+      if (provs[name]) { return f }
+      return {
+        ...f,
+        providers: { ...provs, [name]: { base_url: '', api_key: '', model: '', timeout_sec: 120 } },
+        active_provider: f.active_provider || name,
+      }
+    })
   }
 
-  const removeProfile = (idx) => {
-    const p = form.profiles[idx]
-    if (!confirm(`删除档案 "${p.name}"？`)) return
+  const removeProvider = (name) => {
+    if (!confirm(`删除 provider "${name}"？`)) return
     setForm((f) => {
-      const profiles = (f.profiles || []).filter((_, i) => i !== idx)
-      const patch = { ...f, profiles }
-      if (f.active_profile === p.name) patch.active_profile = ''
+      const provs = { ...providersOf(f) }
+      delete provs[name]
+      const patch = { ...f, providers: provs }
+      if ((f.active_provider || f.active_profile) === name) {
+        patch.active_provider = Object.keys(provs)[0] || ''
+      }
       return patch
     })
   }
 
-  const useProfile = (name) => {
-    set('active_profile', name)
-  }
+  const useProvider = (name) => set('active_provider', name)
 
   const save = async () => {
     setSaving(true)
@@ -125,24 +132,24 @@ export default function SettingsModal({ onClose, onSaved, allowOutside: currentA
     </label>
   )
 
-  const profiles = form?.profiles || []
+  const providers = providersOf(form)
 
   // —— 各分区内容 ——
   const modelsSection = (
     <>
-      {profiles.length === 0 ? (
+      {Object.keys(providers).length === 0 ? (
         <small style={{ display: 'block', marginBottom: 10, color: 'var(--muted)' }}>
-          还没有档案。下方的"默认模型"即当前使用的配置；点"+ 新建档案"可添加多模型。
+          还没有 provider。下方"默认接入"即当前使用的单家配置；点"+ 新建 provider"可添加多家并切换。
         </small>
       ) : null}
 
-      {profiles.map((p, i) => {
-        const active = form.active_profile === p.name
+      {Object.entries(providers).map(([name, p]) => {
+        const active = (form.active_provider || form.active_profile) === name
         return (
-          <details key={p.name} className="profile" open={active}>
+          <details key={name} className="profile" open={active}>
             <summary className="profile-head">
               <div className="profile-title">
-                {p.name}
+                {name}
                 {active ? <span className="badge-current">当前使用</span> : null}
               </div>
               <span className="profile-chev">▾</span>
@@ -151,14 +158,14 @@ export default function SettingsModal({ onClose, onSaved, allowOutside: currentA
               <label className="set-field">
                 <span>API 地址</span>
                 <input type="text" value={p.base_url || ''}
-                  onChange={(e) => updateProfile(i, 'base_url', e.target.value)}
+                  onChange={(e) => updateProvider(name, 'base_url', e.target.value)}
                   placeholder="https://api.deepseek.com" />
               </label>
               <label className="set-field">
                 <span>API Key</span>
                 <div className="key-row">
                   <input type={showKey ? 'text' : 'password'} value={p.api_key || ''}
-                    onChange={(e) => updateProfile(i, 'api_key', e.target.value)} />
+                    onChange={(e) => updateProvider(name, 'api_key', e.target.value)} />
                   <button type="button" className="btn btn-sm" onClick={() => setShowKey((v) => !v)}>
                     {showKey ? '隐藏' : '显示'}
                   </button>
@@ -167,27 +174,32 @@ export default function SettingsModal({ onClose, onSaved, allowOutside: currentA
               <label className="set-field">
                 <span>模型名</span>
                 <input type="text" value={p.model || ''}
-                  onChange={(e) => updateProfile(i, 'model', e.target.value)}
+                  onChange={(e) => updateProvider(name, 'model', e.target.value)}
                   placeholder="deepseek-chat / kimi-k2 / qwen-plus" />
+              </label>
+              <label className="set-field">
+                <span>单步超时(秒)</span>
+                <input type="number" value={p.timeout_sec ?? 120}
+                  onChange={(e) => updateProvider(name, 'timeout_sec', Number(e.target.value))} />
               </label>
               <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
                 {!active ? (
-                  <button type="button" className="btn btn-sm btn-primary" onClick={() => useProfile(p.name)}>使用此档案</button>
+                  <button type="button" className="btn btn-sm btn-primary" onClick={() => useProvider(name)}>使用此 provider</button>
                 ) : null}
-                <button type="button" className="btn btn-sm btn-danger" onClick={() => removeProfile(i)}>删除档案</button>
+                <button type="button" className="btn btn-sm btn-danger" onClick={() => removeProvider(name)}>删除 provider</button>
               </div>
             </div>
           </details>
         )
       })}
 
-      <button type="button" className="btn btn-sm" style={{ width: '100%', marginTop: 2 }} onClick={addProfile}>
-        + 新建档案
+      <button type="button" className="btn btn-sm" style={{ width: '100%', marginTop: 2 }} onClick={addProvider}>
+        + 新建 provider
       </button>
 
-      <details className="profile" style={{ marginTop: 18 }} open={profiles.length === 0}>
+      <details className="profile" style={{ marginTop: 18 }} open={Object.keys(providers).length === 0}>
         <summary className="profile-head">
-          <div className="profile-title">默认模型（无档案时使用）</div>
+          <div className="profile-title">默认接入（没有 provider 时使用）</div>
           <span className="profile-chev">▾</span>
         </summary>
         <div className="profile-body">
