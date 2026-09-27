@@ -180,12 +180,11 @@ if not exist "%CFG%" (
     echo [x] 已生成 %CFG%，请用记事本打开，在 providers 里填入 base_url / api_key / model 后重新运行。
     exit /b 1
 )
-"%PY%" -c "import json,sys;d=json.load(open(r'%CFG%',encoding='utf-8'));v=str(d.get('api_key',''))+str(d.get('base_url',''));sys.exit(0 if v.strip() and chr(60) not in v else 1)" >nul 2>&1
-if errorlevel 1 (
-    echo [x] %CFG% 中的 api_key / base_url 缺失或仍是占位符。
-    echo     请编辑 %CFG% 填入真实值后重新运行。
-    exit /b 1
-)
+REM 校验交给 CLI 的 --check：接入形状的解析只有一份实现（react/config.py），
+REM 启动脚本不再自己复刻——之前那份内联检查读的是顶层 api_key/base_url，
+REM 接入搬进 providers 后就一直误报「缺失」。
+"%PY%" main.py --check
+if errorlevel 1 exit /b 1
 echo [ok] 配置：%CFG%
 exit /b 0
 

@@ -72,11 +72,12 @@ def _print_first_run_guide(path: Path, console: Console) -> None:
                   f"（可用环境变量 REACT_AGENT_CONFIG 覆盖）[/dim]")
 
 
-def load_config(path: Path, console: Console) -> dict:
+def load_config(path: Path, console: Console, quiet: bool = False) -> dict:
     """加载配置；失败时打印原因并以退出码 1 结束（CLI 边界，UX 保持不变）。
 
     配置加载本身统一在 react.config 里完成；此处只负责把 ConfigError 翻译成命令行行为。
     文件不存在（首次运行的典型情形）额外补一段引导，其余错误保持原样。
+    `quiet=True` 时不打印安全提示（供 `--check` 这种预检用，避免每次双击都弹噪音）。
     """
     try:
         loaded = load_config_module(path)
@@ -86,8 +87,9 @@ def load_config(path: Path, console: Console) -> dict:
         else:
             console.print(f"[red]配置错误[/red]：{e}")
         raise SystemExit(1)
-    for w in loaded.warnings:
-        console.print(f"[yellow]⚠ 安全提示[/yellow]：{w}")
+    if not quiet:
+        for w in loaded.warnings:
+            console.print(f"[yellow]⚠ 安全提示[/yellow]：{w}")
     return loaded.values
 
 
@@ -219,11 +221,35 @@ def cmd_repl(skills_dir: Path, console: Console) -> None:
         console.print(f"[{style}]循环结束：{result.status}（{result.rounds} 轮）[/]")
 
 
+def cmd_check(console: Console) -> None:
+    """`--check`：只校验配置并打印生效接入，不启动循环。
+
+    存在的理由：启动脚本（start.bat）需要"配置好了没"的判断，而它自己那份内联
+    检查是按旧形状读顶层 `api_key`/`base_url` 的——接入搬进 `providers` 之后就一直
+    误报。让启动脚本调本命令，校验逻辑就不再有两份、也不会再过期。
+    退出码：0=可用，1=不可用（脚本据此拦下启动）。
+    安全提示在这里静音：预检回答的是"能不能启动"，每次双击都弹一句"key 是明文"
+    只会变成噪音（真开始时仍会提示）。
+    """
+    path = _config_path()
+    cfg = load_config(path, console, quiet=True)
+    eff = resolve_provider(cfg, "act")
+    console.print(f"[green]✔ 配置可用[/green] · {path.name}")
+    console.print(f"[dim]  生效 provider：{active_provider_name(cfg)}"
+                  f" · 模型：{eff['model']} · 端点：{eff['base_url']}"
+                  f" · 超时：{eff['timeout_sec']}s[/dim]")
+    n = len(cfg.get("providers") or {})
+    if n > 1:
+        console.print(f"[dim]  共 {n} 个 provider，可用 active_provider 切换[/dim]")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="react-agent",
                                      description="显式 ReAct 协议的终端 agent（skill 目录约定绑定）")
     parser.add_argument("--bind", nargs=2, metavar=("动作", "SKILL"),
                         help="从 ~/.claude/skills 绑定 skill 到动作槽位，如 --bind plan dev-flow")
+    parser.add_argument("--check", action="store_true",
+                        help="只校验配置并打印生效接入（0=可用 / 1=不可用），不启动循环")
     parser.add_argument("--smoke", action="store_true", help="冒烟测试（Mock 模型，零 API 消耗）")
     parser.add_argument("--smoke-live", action="store_true", help="冒烟测试（真实 kimi API）")
     parser.add_argument("--skills-dir", type=Path,
@@ -235,6 +261,8 @@ def main() -> None:
     console = Console()
     if args.bind:
         cmd_bind(args.bind[0], args.bind[1], args.skills_dir, console)
+    elif args.check:
+        cmd_check(console)
     elif args.smoke:
         cmd_smoke(live=False, skills_dir=args.skills_dir, console=console)
     elif args.smoke_live:
