@@ -46,15 +46,42 @@ def _config_path() -> Path:
     return resolve_config_path(BASE_DIR)
 
 
+def _print_first_run_guide(path: Path, console: Console) -> None:
+    """首次运行引导：配置文件缺失时告诉用户「下一步做什么」。
+
+    只抛出 `ConfigError` 的文本，新用户看到的就是一行报错 + 退出码 1，
+    既不知道 key 写在哪，也不知道模板在哪。这里把「怎么办」补上（仍是退出码 1）。
+    """
+    example = path.with_name("config.example.json")
+    console.print(f"[red]配置缺失[/red]：找不到 {path}")
+    console.print("[dim]看起来是第一次运行，需要先准备模型配置"
+                  "（OpenAI 兼容端点三件套：base_url / api_key / model）。[/dim]")
+    console.print("\n[bold]任选一种方式：[/bold]")
+    if example.is_file():
+        console.print(f"  [cyan]1) 复制模板再填 key[/cyan]\n"
+                      f"     copy {example.name} {path.name}\n"
+                      f"     然后编辑 {path.name} 里的 api_key")
+    else:
+        console.print(f"  [cyan]1) 新建 {path.name}[/cyan]（参考 config.example.json）")
+    console.print(f"  [cyan]2) 用环境变量（推荐，key 不落盘）[/cyan]\n"
+                  f"     $env:REACT_AGENT_API_KEY=\"sk-xxx\"")
+    console.print(f"\n[dim]配置路径：{path}"
+                  f"（可用环境变量 REACT_AGENT_CONFIG 覆盖）[/dim]")
+
+
 def load_config(path: Path, console: Console) -> dict:
     """加载配置；失败时打印原因并以退出码 1 结束（CLI 边界，UX 保持不变）。
 
     配置加载本身统一在 react.config 里完成；此处只负责把 ConfigError 翻译成命令行行为。
+    文件不存在（首次运行的典型情形）额外补一段引导，其余错误保持原样。
     """
     try:
         loaded = load_config_module(path)
     except ConfigError as e:
-        console.print(f"[red]配置错误[/red]：{e}")
+        if not path.is_file():
+            _print_first_run_guide(path, console)
+        else:
+            console.print(f"[red]配置错误[/red]：{e}")
         raise SystemExit(1)
     for w in loaded.warnings:
         console.print(f"[yellow]⚠ 安全提示[/yellow]：{w}")
