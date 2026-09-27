@@ -17,7 +17,7 @@ for _stream in (sys.stdout, sys.stderr, sys.stdin):
 
 from rich.console import Console
 
-from react.action import ACTION_NAMES, ActionRegistry
+from react.action import ACTION_NAMES, DEFAULT_VARIANT, ActionRegistry
 from react.config import (ConfigError, active_provider_name, load_config as load_config_module,
                           resolve_config_path, resolve_provider)
 from react.render import RichRenderer
@@ -221,8 +221,8 @@ def cmd_repl(skills_dir: Path, console: Console) -> None:
         console.print(f"[{style}]循环结束：{result.status}（{result.rounds} 轮）[/]")
 
 
-def cmd_check(console: Console) -> None:
-    """`--check`：只校验配置并打印生效接入，不启动循环。
+def cmd_check(console: Console, skills_dir: Path) -> None:
+    """`--check`：只校验配置并打印生效接入与当前 skill 绑定，不启动循环。
 
     存在的理由：启动脚本（start.bat）需要"配置好了没"的判断，而它自己那份内联
     检查是按旧形状读顶层 `api_key`/`base_url` 的——接入搬进 `providers` 之后就一直
@@ -241,6 +241,21 @@ def cmd_check(console: Console) -> None:
     n = len(cfg.get("providers") or {})
     if n > 1:
         console.print(f"[dim]  共 {n} 个 provider，可用 active_provider 切换[/dim]")
+
+    # 当前绑定了哪套 skill —— 这是最容易误解的一点：不传 --skills-dir 时用的是
+    # `<base>/skills`，仓库里那套 `skills_code/` 并不会被加载。
+    svc = ReactService(cfg, BASE_DIR, skills_dir)
+    registry = svc.build_registry()
+    console.print(f"[dim]  skill 根目录：{svc.skills_dir.name}"
+                  f"（{svc.skills_dir}）[/dim]")
+    parts = []
+    for slot, desc in registry.bind_status():
+        opts = registry.variants_of(slot)
+        extra = [v for v in opts if v != DEFAULT_VARIANT]
+        cur = registry.get(slot).active_variant
+        short = "内置默认" if not registry.get(slot).bound else cur
+        parts.append(f"{slot}/{short}" + (f"（可选 {', '.join(opts)}）" if extra else ""))
+    console.print("[dim]  " + "  ".join(parts) + "[/dim]")
 
 
 def main() -> None:
@@ -262,7 +277,7 @@ def main() -> None:
     if args.bind:
         cmd_bind(args.bind[0], args.bind[1], args.skills_dir, console)
     elif args.check:
-        cmd_check(console)
+        cmd_check(console, args.skills_dir)
     elif args.smoke:
         cmd_smoke(live=False, skills_dir=args.skills_dir, console=console)
     elif args.smoke_live:

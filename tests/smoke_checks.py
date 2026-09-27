@@ -507,6 +507,39 @@ def check_provider_config() -> list[str]:
     #    "单步超时"，用户无从判断哪个生效——这类重复旋钮不留。
     if "step_timeout_sec" in DEFAULTS or "step_timeout_sec" in CONFIG_FIELDS:
         failures.append("step_timeout_sec 与 provider.timeout_sec 重复，应只保留后者")
+
+    # 10) 执行参数默认值必须与"执行已启用"自洽；安全底线不得被顺手放开。
+    #     实测踩过：同一份配置里 shell/写文件全开，exec_timeout_sec 只有 30、
+    #     shell_backend 还是 cmd，结果 10 轮用满仍未完成（max_rounds_exceeded）。
+    from react.config import security_warnings
+    if DEFAULTS["exec_timeout_sec"] < 60:
+        failures.append(
+            f"exec_timeout_sec 默认 {DEFAULTS['exec_timeout_sec']}s 跑不动测试/构建，应 >= 120")
+    if DEFAULTS["shell_backend"] == "cmd":
+        failures.append('shell_backend 默认不应写死 "cmd"（应用 "auto" 探测 Git Bash）')
+    if DEFAULTS["max_rounds"] < 20:
+        failures.append(f"max_rounds 默认 {DEFAULTS['max_rounds']} 对执行型任务偏紧，应 >= 20")
+    # 安全底线：对齐参数不等于放开开关
+    if DEFAULTS["enable_shell_exec"] or DEFAULTS["enable_file_write"]:
+        failures.append("执行开关不应默认开启（安全底线）")
+
+    # 11) 组合告警：单值都合法、凑一起才矛盾的情形必须能被发现（并验证鉴别力）
+    probe = Path("probe.json")
+    def _warns(**over):
+        cfg = dict(DEFAULTS); cfg.update(over)
+        cfg["providers"] = {"x": {"base_url": "https://e", "api_key": "k", "model": "m"}}
+        return [w for w in security_warnings(cfg, probe) if "保守档" in w]
+
+    if _warns(enable_shell_exec=True):
+        failures.append("shell 开 + 默认执行参数不该告警（默认值已自洽）")
+    for over, label in (
+        ({"enable_shell_exec": True, "exec_timeout_sec": 30}, "超时过短"),
+        ({"enable_shell_exec": True, "shell_backend": "cmd"}, "后端写死 cmd"),
+    ):
+        if not _warns(**over):
+            failures.append(f"shell 已启用但{label}时未告警")
+    if _warns(enable_shell_exec=False, exec_timeout_sec=30):
+        failures.append("shell 关闭时不该因超时短而告警（那是无害配置）")
     return failures
 
 

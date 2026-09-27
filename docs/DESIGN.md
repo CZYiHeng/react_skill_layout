@@ -548,12 +548,13 @@ class LocalExecutor:
 |---|---|---|
 | `plan_model` | `""` | 计划阶段专用模型名；**只换 model**，端点与 key 复用当前 provider。留空=计划也用当前模型 |
 | `plan_timeout_sec` | 300 | 计划阶段超时（推理模型更慢） |
-| `max_rounds` | 10 | 单任务最大轮数，超限强制退出并提示人工接管 |
+| `max_rounds` | 20 | 单任务最大轮数，超限强制退出并提示人工接管 |
 | `show_reasoning` | true | 是否展示模型思考过程（kimi `reasoning_content`） |
 | `max_context_tokens` | 100000 | 压缩阈值（token）：用实测 usage 预估"下一次请求的压力"，超阈值才压缩一次。调大=命中更高、单次请求更大；`<=0` 取消预算（回滚开关） |
 | `enable_shell_exec` | false | 是否允许 ACT 经 `[EXEC: shell]` 真实执行命令（问题④，默认关） |
 | `enable_file_write` | false | 是否允许 ACT 经 `[EXEC: write]` 真实写文件（默认关，路径限 cwd 内） |
-| `exec_timeout_sec` | 30 | shell 执行超时 |
+| `exec_timeout_sec` | 120 | shell 执行超时（30 秒跑不动测试/构建/装依赖） |
+| `shell_backend` | `auto` | `cmd` / `bash` / `auto`；`auto` 探测 Git Bash，找不到回退 `cmd` |
 | `sandbox_shell` | false | shell 执行是否套 **OS 级沙箱**（仅 Windows 生效：剥特权令牌 + 作业对象隔离，见 §4.1）；开启 `enable_shell_exec` 才有效 |
 | `sandbox_integrity_low` | false | 沙箱内是否降为低完整性级别（需把 cwd 降 IL，默认关，见 §4.1） |
 | `gate_mode` | `auto` | 人工闸门档位，见 §5.1 |

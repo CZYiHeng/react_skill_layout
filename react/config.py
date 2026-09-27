@@ -45,16 +45,22 @@ PROVIDER_FIELDS = ("base_url", "api_key", "model", "timeout_sec")
 DEFAULT_STEP_TIMEOUT = 120
 
 # 默认值（config 未显式给出时补齐）
+#:
+#: 关于执行参数（exec_timeout_sec / shell_backend / max_rounds）为何取"偏宽"的值：
+#: 这三项曾是保守档（30 秒 / cmd / 10 轮），与"执行已启用"的用法自相矛盾——实测就
+#: 出过一次 10 轮用满仍未完成（max_rounds_exceeded），而同一份配置里 shell 与写文件
+#: 都开着。默认值应当与"开启执行后真正能干活"自洽，而不是让用户自己去发现该调哪个。
+#: 安全底线不随之放宽：enable_shell_exec / enable_file_write 仍默认 False。
 DEFAULTS: dict = {
-    "max_rounds": 10,
+    "max_rounds": 20,
     "show_reasoning": True,
     "max_context_tokens": 100000,   # 压缩阈值（token）：下一次请求预估超过它才压缩
     "enable_shell_exec": False,
     "enable_file_write": False,
-    "exec_timeout_sec": 30,
+    "exec_timeout_sec": 120,     # 30 秒跑不动测试/构建/装依赖
     "sandbox_shell": False,
     "sandbox_integrity_low": False,
-    "shell_backend": "cmd",      # cmd / bash / auto；auto=探测 Git Bash，找不到回退 cmd
+    "shell_backend": "auto",     # cmd / bash / auto；auto=探测 Git Bash，找不到回退 cmd
     "gate_mode": "auto",
     "work_dir": "",
     "allow_outside_work_dir": False,
@@ -225,6 +231,23 @@ def security_warnings(cfg: dict, path: Path) -> list[str]:
             f"本项目显式设定 key 只从文件读，请确认该文件已被 .gitignore 排除；"
             f"若曾提交/共享过，请到服务商处轮换该 key。"
         )
+    # 组合检查：单看每一项都合法，凑一起就自相矛盾——执行开着，参数却是保守档。
+    # 实测踩过：同一份配置里 shell/写文件全开，exec_timeout_sec 只有 30、后端还是 cmd，
+    # 结果是长命令被截断、任务 10 轮用满仍未完成。单值校验发现不了这种形态。
+    if cfg.get("enable_shell_exec"):
+        tight: list[str] = []
+        try:
+            if int(cfg.get("exec_timeout_sec", 0)) < 60:
+                tight.append(f"exec_timeout_sec={cfg.get('exec_timeout_sec')}（建议 >= 120）")
+        except (TypeError, ValueError):
+            pass
+        if str(cfg.get("shell_backend", "")) == "cmd":
+            tight.append('shell_backend="cmd"（建议 "auto" 以探测 Git Bash）')
+        if tight:
+            warns.append(
+                "已启用 shell 执行，但执行参数取的是保守档：" + "；".join(tight) +
+                "。长命令可能被超时截断，且部分写法在 cmd 下不可用。"
+            )
     return warns
 
 

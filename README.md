@@ -120,8 +120,12 @@ skills/verify/SKILL.md     ← VERIFY：怎么终检（pass/fail）
 ```
 
 - 槽位目录为空时回退内置默认提示词。
+- **默认绑定的是仓库自带的 `skills/`**（通用推理/分析档）；`skills_code/` 是**并列的另一套**，
+  **不设 `--skills-dir` 就不会被加载**——这点最容易误解。
 - 把 `~/.claude/skills/` 里的 skill 绑到槽位：`python main.py --bind plan dev-flow`，或直接复制目录到 `skills/plan/`。
-- 仓库附带一套**写代码专用档案** `skills_code/`（8 字段函数头、req-to-code 增量骨架、solution-review 三维度等），用 `--skills-dir` 或 `REACT_AGENT_SKILLS_DIR` 切换——框架绑定机制不变，换的只是"写代码行为"。
+- 仓库附带一套**写代码专用档案** `skills_code/`（8 字段函数头、req-to-code 增量骨架、solution-review 三维度等），用 `--skills-dir skills_code` 或 `REACT_AGENT_SKILLS_DIR` 切换——框架绑定机制不变，换的只是"写代码行为"。
+- 查当前到底绑了什么：`python main.py --check`（打印 skill 根目录与五个槽位各自的变体）。
+- 槽位内还能放多个 skill（变体）：`skills/<槽位>/<变体名>/SKILL.md` + 配置 `skill_variants` 选用，只影响该槽位。
 
 ## Web 对话前端
 
@@ -173,8 +177,12 @@ uv run python mcp_server.py   # stdio MCP server
 ACT 产物可附带 `[EXEC: shell|write]` 块请求本地执行。出于安全默认，需显式开启：
 
 ```json
-{ "enable_shell_exec": true, "enable_file_write": true, "exec_timeout_sec": 30 }
+{ "enable_shell_exec": true, "enable_file_write": true }
 ```
+
+> 只需打开开关：`exec_timeout_sec`（默认 120 秒）与 `shell_backend`（默认 `auto`，
+> 探测 Git Bash、找不到回退 `cmd`）的默认值已按"执行真能干活"设定，不必手填。
+> 若显式写成保守值（超时 < 60 或 `cmd`），启动会告警提示。
 
 - `shell`：在 `cwd` 内运行命令；`write`：写入文件，目标必须落在 `cwd` 内（越界拒绝）
 - 未开启时 `[EXEC]` 仅作文本产物呈现，agent 不会触碰环境
