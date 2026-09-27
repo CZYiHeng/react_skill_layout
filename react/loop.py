@@ -401,9 +401,9 @@ class ReActLoop:
     gate: Gate | None = None          # None = 自动继续（--smoke 场景）
     ask: Ask | None = None            # None = ASK 用占位回答（自动场景）
     executor: Executor | None = None  # ACT 执行器；None = 不执行（纯文本产物）
-    #: 人工闸门档位：plan=计划批准一次（默认）/ step=每步骤一次 / auto=仅必须拦时
+    #: 人工闸门档位：auto=仅必须拦时（默认）/ step=每步骤一次 / plan=计划批准一次
     #: / phase=每阶段一次（旧行为，回滚开关）
-    gate_mode: str = "plan"
+    gate_mode: str = "auto"
     #: 非阻塞查看是否有待处理的人工指令（随时插手：暂停 / 纠偏 / 中止）
     interrupt: Callable[[], tuple[str, str | None] | None] | None = None
     force_plan: bool = field(default=False, init=False)
@@ -419,6 +419,8 @@ class ReActLoop:
     last_act_result: str = field(default="", init=False)
     # 原生工具循环标记：_step 执行了真实工具时置 True（ACT 循环据此继续）
     _tool_loop_pending: bool = field(default=False, init=False)
+    # 本轮 ACT 是否跑过原生工具：结果已作为 role=tool 回执入账，无需再重复回显
+    _native_tool_ran: bool = field(default=False, init=False)
     # 会话级 token 统计：每次模型调用追加一条 {phase, tokens, usage, elapsed_sec, ts}
     token_stats: list = field(default_factory=list, init=False)
 
@@ -523,6 +525,7 @@ class ReActLoop:
         if self.executor is not None:
             handler = lambda name, args: self.executor.run_tool(name, args)  # noqa: E731
         last = None
+        self._native_tool_ran = False
         for _ in range(_TOOL_LOOP_MAX):
             self._tool_loop_pending = False
             last = self._step("act", act_prompt, run_gate=False,
@@ -535,6 +538,7 @@ class ReActLoop:
                     self._apply_gate("act")
                 return last
             # 有工具执行：循环继续，模型基于工具结果产出/继续调用
+            self._native_tool_ran = True
         self.render.warn(f"工具循环超过 {_TOOL_LOOP_MAX} 次上限，以最后输出为准")
         return last
 
@@ -580,9 +584,14 @@ class ReActLoop:
 
         # ACT 执行请求：绑定执行器则真实执行，回显交给 OBSERVE 观察（④ 落地）
         # 一次 ACT 可声明多个请求，必须逐个执行——只跑第一个会静默丢文件
+        #
+        # 去重：本轮已走原生工具调用时，工具结果**已经**作为 role=tool 回执在账本里，
+        # OBSERVE 的历史看得到。此前再拼一份完整副本，等于同一批文件内容在上下文里
+        # 存两遍（实测 prompt 从 ~3k 涨到 ~16k），既烧 token 又让窗口更快触发压缩。
         exec_note = ""
         exec_reqs = parse_exec_all(act_out.raw)
         exec_done = 0
+        already_in_history = self._native_tool_ran
         if exec_reqs:
             notes: list[str] = []
             total = len(exec_reqs)
@@ -593,14 +602,22 @@ class ReActLoop:
                     continue
                 self.render.info(f"↳ 执行 {kind} ({i}/{total}) …")
                 exec_out = self.executor.run(kind, payload)
-                self.context.add_user(f"[执行回显 · {kind} {i}/{total}]\n{exec_out}")
+                if not already_in_history:
+                    # 需入账本（OBSERVE 的临时提示不在账本里，不入账就会丢结果）
+                    self.context.add_user(f"[执行回显 · {kind} {i}/{total}]\n{exec_out}")
                 notes.append(f"【执行回显 {i}/{total}（{kind}）】\n{exec_out}")
                 exec_done += 1
             if exec_done != total:
                 self.render.warn(
                     f"声明了 {total} 个执行请求，实际执行 {exec_done} 个，请核对是否漏执行"
                 )
-            exec_note = "\n" + "\n".join(notes)
+            if already_in_history:
+                # 内容在上方 role=tool 回执里，这里只留一行指针，不再复制正文
+                exec_note = (f"\n【本轮文本协议执行请求 {exec_done}/{total} 个："
+                             f"{'、'.join(k for k, _ in exec_reqs)}；"
+                             "执行结果见上方对应的工具回执】")
+            else:
+                exec_note = "\n" + "\n".join(notes)
 
         # OBSERVE：计划标准是唯一真相源，ACT 的 [CHECK] 仅在计划未给标准时兜底
         # （此前两者并列喂入，等于让标准被生产两次、消费一次）
