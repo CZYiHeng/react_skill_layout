@@ -510,6 +510,124 @@ def check_provider_config() -> list[str]:
     return failures
 
 
+def check_skill_variants(base_dir: Path) -> list[str]:
+    """槽位内多 skill：`<槽位>/<变体名>/SKILL.md` 的发现、切换、回退与降级。
+
+    这是"把槽位内部的 skill 抽出来"的机制面：默认变体是槽位根下的 SKILL.md，
+    额外 skill 放子目录，运行时按配置选用其一。**不配变体时行为必须与从前逐字节一致。**
+    """
+    import tempfile
+
+    from react.action import (ACTION_NAMES, DEFAULT_VARIANT, ActionRegistry,
+                              parse_skill_md)
+
+    failures: list[str] = []
+
+    def write_md(path: Path, name: str, body: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"---\nname: {name}\ndescription: t\n---\n\n{body}\n",
+                        encoding="utf-8")
+
+    # 1) 默认路径逐字节不变：无子目录时，body 与直接解析 SKILL.md 的结果相同
+    base = ActionRegistry()
+    base.load(base_dir / "skills")
+    for slot in ACTION_NAMES:
+        md = base_dir / "skills" / slot / "SKILL.md"
+        if not md.is_file():
+            continue
+        _, expect = parse_skill_md(md.read_text(encoding="utf-8"), fallback_name=slot)
+        got = base.get(slot).skill_body
+        if got != expect.strip():
+            failures.append(f"槽位 {slot}: 无变体时 body 与直接解析 SKILL.md 不一致")
+        if base.get(slot).active_variant != DEFAULT_VARIANT:
+            failures.append(f"槽位 {slot}: 默认应为 {DEFAULT_VARIANT}")
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        # 槽位 act：默认 + 一个变体；observe：只有默认（用来验证互不影响）
+        write_md(root / "act" / "SKILL.md", "act", "DEFAULT-ACT")
+        write_md(root / "act" / "strict-code" / "SKILL.md", "strict-code", "STRICT-ACT")
+        write_md(root / "observe" / "SKILL.md", "observe", "DEFAULT-OBSERVE")
+        # 缺 SKILL.md 的子目录（不应当成 skill，但要告警）
+        (root / "act" / "assets").mkdir(parents=True)
+        # 占用保留名 default（应告警并忽略）
+        write_md(root / "act" / DEFAULT_VARIANT / "SKILL.md", "default", "SHOULD-IGNORE")
+
+        reg = ActionRegistry()
+        reg.load(root)
+
+        # 2) 变体被发现，default 仍在（且未被保留名子目录覆盖）
+        vs = set(reg.get("act").variants)
+        if vs != {DEFAULT_VARIANT, "strict-code"}:
+            failures.append(f"变体发现不正确：{sorted(vs)}")
+        if "SHOULD-IGNORE" in reg.get("act").skill_body:
+            failures.append("保留名 default 子目录不应覆盖默认变体")
+
+        # 3) 缺 SKILL.md 的子目录 / 保留名 都要告警
+        joined = "\n".join(reg.warnings)
+        if "assets" not in joined:
+            failures.append("缺 SKILL.md 的子目录未告警")
+        if DEFAULT_VARIANT not in joined:
+            failures.append("占用保留名 default 未告警")
+
+        # 4) 切换生效，且只影响该槽位
+        got = reg.set_variant("act", "strict-code")
+        if got != "strict-code" or "STRICT-ACT" not in reg.get("act").skill_body:
+            failures.append("切换变体未生效")
+        if "DEFAULT-OBSERVE" not in reg.get("observe").skill_body:
+            failures.append("切换 act 变体影响到了 observe 槽位")
+
+        # 5) 回退：空串 / default / 下划线 都回默认
+        for back in ("", DEFAULT_VARIANT, "_"):
+            reg.set_variant("act", back)
+            if "DEFAULT-ACT" not in reg.get("act").skill_body:
+                failures.append(f"set_variant({back!r}) 未回退默认")
+            if reg.get("act").active_variant != DEFAULT_VARIANT:
+                failures.append(f"set_variant({back!r}) 后 active_variant 不是 default")
+
+        # 6) 未知变体 → KeyError 且消息含可选值
+        try:
+            reg.set_variant("act", "nope")
+            failures.append("未知变体未报错")
+        except KeyError as e:
+            if "strict-code" not in str(e):
+                failures.append("未知变体的报错未列出可选项")
+
+        # 7) 槽位没有 SKILL.md 时回退内置默认提示词（不是空 body）
+        reg2 = ActionRegistry()
+        reg2.load(root)                      # think/plan/verify 在 root 下不存在
+        reg2.set_variant("think", "")
+        a = reg2.get("think")
+        if a.bound or not a.skill_body.strip():
+            failures.append("无默认 SKILL.md 的槽位回退后应为内置默认提示词且 bound=False")
+
+        # 8) variants_of 供展示用
+        if reg.variants_of("act") != [DEFAULT_VARIANT, "strict-code"]:
+            failures.append(f"variants_of 返回不正确：{reg.variants_of('act')}")
+
+        # 9) 配置级装配（ReactService.build_registry）：正常切换 + 非法值降级不抛
+        from react.service import ReactService
+        for variants, expect, label in (
+            ({}, DEFAULT_VARIANT, "缺省"),
+            ({"act": "strict-code"}, "strict-code", "正常切换"),
+            ({"act": "nope"}, DEFAULT_VARIANT, "未知变体应降级"),
+            ({"nosuch": "x"}, DEFAULT_VARIANT, "未知槽位应忽略"),
+        ):
+            svc = ReactService({"skill_variants": variants}, base_dir, root)
+            r2 = svc.build_registry()
+            got = r2.get("act").active_variant
+            if got != expect:
+                failures.append(f"skill_variants {label}：act 期望 {expect}，实际 {got}")
+            if variants and not r2.warnings and variants in ({"act": "nope"}, {"nosuch": "x"}):
+                failures.append(f"skill_variants {label}：非法值未告警")
+        # 整体类型错（str）也要能容忍而不是崩
+        try:
+            ReactService({"skill_variants": "oops"}, base_dir, root).build_registry()
+        except Exception as e:  # noqa: BLE001
+            failures.append(f"skill_variants 类型错时应告警而非抛异常，实际 {type(e).__name__}")
+    return failures
+
+
 def check_pressure_estimate() -> list[str]:
     """压力计量：实测优先、新增部分靠估算、并用实测在线校准。"""
     failures: list[str] = []

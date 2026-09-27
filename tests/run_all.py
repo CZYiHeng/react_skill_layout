@@ -91,6 +91,7 @@ def run_smoke(live: bool, skills_dir: Path, base_dir: Path,
     failures += C.check_token_budget()
     failures += C.check_pressure_estimate()
     failures += C.check_provider_config()
+    failures += C.check_skill_variants(base_dir)
     failures += C.check_session_memory(base_dir)
     failures += C.check_tool_window()
     failures += C.check_sandbox_nested()

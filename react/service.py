@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from .action import ActionRegistry
+from .action import ACTION_NAMES, ActionRegistry
 from .config import resolve_provider
 from .context import SessionContext
 from .executor import Executor, LocalExecutor
@@ -346,7 +346,32 @@ class ReactService:
     def build_registry(self) -> ActionRegistry:
         registry = ActionRegistry()
         registry.load(self.skills_dir)
+        self._apply_skill_variants(registry)
         return registry
+
+    def _apply_skill_variants(self, registry: ActionRegistry) -> None:
+        """按 `cfg["skill_variants"]` 把各槽位切到指定变体（`{"act": "strict-code"}`）。
+
+        未知变体名 **降级为默认并告警**，不抛异常——启动不该因为一个拼错的变体名而死，
+        这与 gate_mode 非法值走 warnings 的既有处理一致。
+        """
+        wanted = self.cfg.get("skill_variants") or {}
+        if not isinstance(wanted, dict):
+            registry.warnings.append(
+                f"skill_variants 应为对象（槽位 → 变体名），实际 {type(wanted).__name__}，已忽略"
+            )
+            return
+        for slot, variant in wanted.items():
+            if slot not in ACTION_NAMES:
+                registry.warnings.append(
+                    f"skill_variants 含未知槽位 '{slot}'，已忽略；"
+                    f"可选: {', '.join(ACTION_NAMES)}"
+                )
+                continue
+            try:
+                registry.set_variant(slot, str(variant))
+            except KeyError as e:
+                registry.warnings.append(f"{e}；已回退默认")
 
     def _build_env_info(self) -> str:
         """构造运行环境信息文本，拼进每步 system 提示，避免模型在真空中默认 Linux。"""

@@ -60,6 +60,10 @@ DEFAULTS: dict = {
     "allow_outside_work_dir": False,
     "plan_model": "",            # 计划阶段专用模型（推理模型如 deepseek-reasoner）；空=与 model 相同
     "plan_timeout_sec": 300,     # 计划模型超时（推理模型更慢，默认更长）
+    #: 槽位内 skill 变体选择：`{"<槽位>": "<变体名>"}`，缺省空 = 五个槽位全用默认。
+    #: 变体 = `<skills_root>/<槽位>/<变体名>/SKILL.md`（默认变体是槽位根下的 SKILL.md）。
+    #: 未知变体名会被降级为默认并告警，不阻断启动。
+    "skill_variants": {},
 }
 
 #: 人工闸门档位。auto=只在「需要人决策」时拦（默认）

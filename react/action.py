@@ -2,6 +2,15 @@
 
 每个槽位对应 ReAct 循环中的一个认知阶段。启动时扫描 skills/<槽位名>/SKILL.md，
 存在则绑定（正文注入为该步骤的系统提示），不存在则用内置默认提示词。
+
+**槽位内可放多个 skill（变体）**：`<槽位>/SKILL.md` 是该槽位的默认行为，
+`<槽位>/<变体名>/SKILL.md` 是可独立抽出/替换的额外 skill，运行时按配置选用其中一个：
+
+    skills/act/SKILL.md             ← 默认
+    skills/act/strict-code/SKILL.md ← 变体，名字 = 子目录名
+
+选中的正文会**替换**该槽位的提示，五个槽位各自独立。每步只注入当前槽位那一份，
+所以加变体不会增加单次请求的 token。
 """
 
 from __future__ import annotations
@@ -11,12 +20,17 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
+#: 默认变体的保留名（等同槽位根下的 SKILL.md）；子目录不得占用。
+DEFAULT_VARIANT = "default"
+
 
 @dataclass
 class Action:
     name: str                       # think / plan / act / observe / verify
     skill_path: Path | None = None  # 绑定的 SKILL.md 路径；None = 内置默认
     skill_body: str = ""            # 注入的系统提示正文
+    active_variant: str = DEFAULT_VARIANT   # 当前生效的变体名
+    variants: dict[str, Path] = field(default_factory=dict)  # 可用变体 → SKILL.md 路径
 
     @property
     def bound(self) -> bool:
@@ -120,23 +134,99 @@ class ActionRegistry:
     warnings: list[str] = field(default_factory=list)
 
     def load(self, skills_root: Path) -> None:
-        """扫描 skills_root/<槽位名>/SKILL.md，构建全部槽位。"""
+        """扫描 skills_root/<槽位名>/SKILL.md，构建全部槽位。
+
+        同时收集**槽位内变体** `<槽位名>/<变体名>/SKILL.md`（见模块 docstring）。
+        默认变体的加载路径与结果**逐字节未变**——不配置变体时行为与从前完全一致。
+        """
         for name in ACTION_NAMES:
-            skill_md = skills_root / name / "SKILL.md"
-            if skill_md.is_file():
-                raw = skill_md.read_text(encoding="utf-8", errors="replace")
-                skill_name, body = parse_skill_md(raw, fallback_name=name)
+            slot_dir = skills_root / name
+            variants = self._scan_variants(name, slot_dir)
+            default_md = slot_dir / "SKILL.md"
+            if default_md.is_file():
+                variants[DEFAULT_VARIANT] = default_md
+                skill_name, body = self._read_skill(default_md, fallback_name=name)
                 if skill_name != name:
                     self.warnings.append(
                         f"槽位 {name}: skill 自报名称 '{skill_name}' 与目录名不一致，按目录名绑定"
                     )
                 self.actions[name] = Action(
-                    name=name, skill_path=skill_md, skill_body=body.strip()
+                    name=name, skill_path=default_md, skill_body=body.strip(),
+                    active_variant=DEFAULT_VARIANT, variants=variants,
                 )
             else:
                 self.actions[name] = Action(
-                    name=name, skill_path=None, skill_body=DEFAULT_PROMPTS[name]
+                    name=name, skill_path=None, skill_body=DEFAULT_PROMPTS[name],
+                    active_variant=DEFAULT_VARIANT, variants=variants,
                 )
+
+    def _scan_variants(self, slot: str, slot_dir: Path) -> dict[str, Path]:
+        """收集 `<槽位>/<变体名>/SKILL.md`。缺 SKILL.md 或占用保留名 → 告警并跳过。"""
+        out: dict[str, Path] = {}
+        if not slot_dir.is_dir():
+            return out
+        for child in sorted(slot_dir.iterdir()):
+            if not child.is_dir():
+                continue
+            if child.name == DEFAULT_VARIANT:
+                self.warnings.append(
+                    f"槽位 {slot}: 子目录 '{DEFAULT_VARIANT}' 是保留名（等同槽位根下的 "
+                    f"SKILL.md），已忽略"
+                )
+                continue
+            md = child / "SKILL.md"
+            if not md.is_file():
+                # 子目录可能是脚本/参考资料目录，不强制报错，但要让人知道它没被当成 skill
+                self.warnings.append(
+                    f"槽位 {slot}: 子目录 '{child.name}' 下没有 SKILL.md，未作为 skill 载入"
+                )
+                continue
+            out[child.name] = md
+        return out
+
+    def _read_skill(self, md: Path, fallback_name: str) -> tuple[str, str]:
+        raw = md.read_text(encoding="utf-8", errors="replace")
+        return parse_skill_md(raw, fallback_name=fallback_name)
+
+    def set_variant(self, slot: str, variant: str) -> str:
+        """切换某槽位生效的 skill 变体，返回实际生效的变体名。
+
+        - `""` / `"default"` / `"_"` → 回退默认（槽位根下的 SKILL.md；没有则内置默认提示词）
+        - 未知变体名 → 抛 KeyError 并在消息里列出可选值（与 `get()` 的报错风格一致）
+
+        注：默认变体是**重新从磁盘读**的，所以外部改了 SKILL.md 后调用本方法能拿到新内容；
+        但它不会重扫子目录（新增变体需要重新 `load()`）。
+        """
+        action = self.get(slot)
+        name = (variant or "").strip()
+        if name in ("", DEFAULT_VARIANT, "_"):
+            # 默认变体的「自报名称 ≠ 槽位名」告警已在 load() 里报过，此处不重复
+            md = action.variants.get(DEFAULT_VARIANT)
+            if md is not None:
+                _, body = self._read_skill(md, fallback_name=slot)
+                action.skill_path, action.skill_body = md, body.strip()
+            else:
+                action.skill_path, action.skill_body = None, DEFAULT_PROMPTS[slot]
+            action.active_variant = DEFAULT_VARIANT
+            return DEFAULT_VARIANT
+
+        md = action.variants.get(name)
+        if md is None:
+            available = ", ".join(sorted(action.variants)) or "（无）"
+            raise KeyError(f"槽位 {slot} 没有变体 '{name}'，可选: {available}")
+        action.skill_path, action.skill_body = md, self._load_variant(slot, md, name)
+        action.active_variant = name
+        return name
+
+    def _load_variant(self, slot: str, md: Path, expect_name: str) -> str:
+        """读一个变体的正文；自报名称与目录名不符时告警（只读一次文件）。"""
+        skill_name, body = self._read_skill(md, fallback_name=expect_name)
+        if skill_name != expect_name:
+            self.warnings.append(
+                f"槽位 {slot}: skill 自报名称 '{skill_name}' 与目录名 '{expect_name}' 不一致，"
+                f"按目录名绑定"
+            )
+        return body.strip()
 
     def get(self, name: str) -> Action:
         if name not in self.actions:
@@ -156,9 +246,21 @@ class ActionRegistry:
         return target
 
     def bind_status(self) -> list[tuple[str, str]]:
-        """返回 [(槽位, 绑定描述)]，用于 /binds 与启动横幅。"""
+        """返回 [(槽位, 绑定描述)]，用于 /binds 与启动横幅。
+
+        有变体时显示 `skill: <变体名>`；同时给出可选变体数，便于发现"槽位里还有别的 skill"。
+        """
         out = []
         for name in ACTION_NAMES:
             a = self.actions[name]
-            out.append((name, f"skill: {a.skill_path.parent.name}" if a.bound else "内置默认"))
+            if not a.bound:
+                out.append((name, "内置默认"))
+                continue
+            extra = len([v for v in a.variants if v != DEFAULT_VARIANT])
+            suffix = f"（另有 {extra} 个变体可选）" if extra else ""
+            out.append((name, f"skill: {a.active_variant}{suffix}"))
         return out
+
+    def variants_of(self, slot: str) -> list[str]:
+        """某槽位可选的变体名（含 default），供前端/CLI 展示。"""
+        return sorted(self.get(slot).variants)

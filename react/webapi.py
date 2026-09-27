@@ -171,6 +171,9 @@ async def api_session(request: Request) -> JSONResponse:
     return JSONResponse({
         "session_id": sess.id,
         "binds": _binds(registry),
+        # 每个槽位当前生效的变体名 + 可选变体列表，供前端显示/切换
+        "skill_variants": {n: registry.get(n).active_variant for n in ACTION_NAMES},
+        "variants": {n: registry.variants_of(n) for n in ACTION_NAMES},
         "warnings": list(getattr(registry, "warnings", [])),
         "config": {
             # model 取**生效 provider** 的，不再是顶层字段——多 provider 时
@@ -472,6 +475,8 @@ CONFIG_FIELDS: dict[str, type] = {
     "sandbox_shell": bool, "sandbox_integrity_low": bool,
     "shell_backend": str,
     "gate_mode": str, "work_dir": str, "allow_outside_work_dir": bool,
+    #: 槽位内 skill 变体选择 {"<槽位>": "<变体名>"}；dict 走单独校验分支
+    "skill_variants": dict,
 }
 #: 接入配置字段：单独处理，合并后再整体校验一次（缺 key 就不让写）。
 CONFIG_PROVIDER_FIELDS = ("providers", "active_provider")
@@ -511,6 +516,21 @@ async def api_config_put(request: Request) -> JSONResponse:
                 current[key] = int(val)
             except (TypeError, ValueError):
                 return JSONResponse({"error": f"字段 {key} 应为整数"}, status_code=400)
+        elif typ is dict:
+            # 键值对型配置（目前只有 skill_variants）：键必须是槽位名、值必须是字符串
+            if not isinstance(val, dict):
+                return JSONResponse({"error": f"字段 {key} 应为对象"}, status_code=400)
+            bad_slot = [k for k in val if k not in ACTION_NAMES]
+            if bad_slot:
+                return JSONResponse(
+                    {"error": f"字段 {key} 含未知槽位：{', '.join(bad_slot)}；"
+                              f"可选：{', '.join(ACTION_NAMES)}"},
+                    status_code=400,
+                )
+            if any(not isinstance(v, str) for v in val.values()):
+                return JSONResponse(
+                    {"error": f"字段 {key} 的值应为字符串（变体名）"}, status_code=400)
+            current[key] = val
         else:
             current[key] = str(val)
 
