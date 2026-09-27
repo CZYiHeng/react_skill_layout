@@ -5,7 +5,7 @@
   "max_rounds": 10,
   "step_timeout_sec": 120,
   "show_reasoning": true,
-  "max_context_tokens": 100000,
+  "max_context_tokens": 200000,
   "enable_shell_exec": false,
   "enable_file_write": false,
   "exec_timeout_sec": 30,

@@ -35,7 +35,7 @@ DEFAULTS: dict = {
     "max_rounds": 10,
     "step_timeout_sec": 120,
     "show_reasoning": True,
-    "max_context_tokens": 100000,   # 压缩阈值（token）：下一次请求预估超过它才压缩
+    "max_context_tokens": 200000,   # 压缩阈值（token）：下一次请求预估超过它才压缩
     "enable_shell_exec": False,
     "enable_file_write": False,
     "exec_timeout_sec": 30,
@@ -68,8 +68,11 @@ GATE_MODES = ("plan", "step", "auto", "phase")
 #: tool 回执上万字符也只算 1 条。旧实现按条数触发，在真实负载下被反复触发，而
 #: provider 的前缀缓存要求完整匹配缓存前缀单元，压缩一次就作废其后全部缓存
 #: （实测同会话 prompt 非单调 19358→16481，OBSERVE 命中率仅 3.3%）。
-#: 取 100k 是与端点窗口对齐后的保守值（DeepSeek 1M / Kimi 256k / 常见端点 128k），
-#: 留足输出预算。窗口更小的模型请按"窗口 × 0.6"下调。
+#: 取值 200k 的依据是**实测**而非估算：一次真实的工具型任务（dupfinder，5 轮
+#: 43 次调用）prompt 峰值到 72734 token，在 100k 预算下仍触发了 4 次压缩
+#: （prompt 下跌 4 次，每次都是缓存作废点）。抬到 200k 后同类任务全程不压缩；
+#: DeepSeek 官方端点窗口 1M，留足输出仍有很大余量。
+#: 窗口更小的端点请按"窗口 × 0.6"下调（例如 128k 窗口 → 约 76000）。
 #: 设为 0 或负数 = 取消上下文预算（只剩内部条数护栏兜底），即回滚开关。
 #:
 #: 注：早先还有一个 `max_context_messages`（条数预算）配置键，已**删除**。

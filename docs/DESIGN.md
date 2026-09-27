@@ -507,7 +507,7 @@ class LocalExecutor:
   "max_rounds": 10,
   "step_timeout_sec": 120,
   "show_reasoning": true,
-  "max_context_tokens": 100000,
+  "max_context_tokens": 200000,
   "enable_shell_exec": false,
   "enable_file_write": false,
   "exec_timeout_sec": 30
@@ -522,7 +522,7 @@ class LocalExecutor:
 | `max_rounds` | 10 | 单任务最大轮数，超限强制退出并提示人工接管 |
 | `step_timeout_sec` | 120 | 单步模型调用超时（含重试） |
 | `show_reasoning` | true | 是否展示模型思考过程（kimi `reasoning_content`） |
-| `max_context_tokens` | 100000 | 压缩阈值（token）：用实测 usage 预估"下一次请求的压力"，超阈值才压缩一次。调大=命中更高、单次请求更大；`<=0` 取消预算（回滚开关） |
+| `max_context_tokens` | 200000 | 压缩阈值（token）：用实测 usage 预估"下一次请求的压力"，超阈值才压缩一次。调大=命中更高、单次请求更大；`<=0` 取消预算（回滚开关） |
 | `enable_shell_exec` | false | 是否允许 ACT 经 `[EXEC: shell]` 真实执行命令（问题④，默认关） |
 | `enable_file_write` | false | 是否允许 ACT 经 `[EXEC: write]` 真实写文件（默认关，路径限 cwd 内） |
 | `exec_timeout_sec` | 30 | shell 执行超时 |

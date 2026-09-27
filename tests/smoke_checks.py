@@ -354,6 +354,29 @@ def check_token_budget() -> list[str]:
     ctx4.build_step_messages(act, "执行")
     if ctx4._digest_upto == 0:
         failures.append("max_context_tokens=0 时条数护栏未生效（回滚开关失效）")
+
+    # 5) 默认预算的回归保护。构造要落在**两个候选值之间**才有鉴别力：
+    #    8 条 20k 字符 + 60 条 1k 字符 ≈ 110k token 压力 —— 200k 下不压缩、
+    #    100k 下会压缩。若有人把默认值调回 100k，这里立刻变红。
+    #    （实测任务的 72734 token 量级**区分不了** 100k 与 200k，用它会得到
+    #      一个永远绿的假断言——这是第一版写错的地方。）
+    reg = SessionContext(max_context_tokens=200_000)
+    for i in range(8):
+        reg.add_user("x" * 20_000)          # 粗略模拟大 tool 回执
+    for i in range(60):
+        reg.add_user("y" * 1_000)
+    pressure = reg.pressure_tokens()
+    reg.build_step_messages(act, "执行")
+    if reg._digest_upto != 0:
+        failures.append(
+            f"默认 200k 预算下不该压缩（构造压力 {pressure}），"
+            f"实际 _digest_upto={reg._digest_upto} —— 默认值疑似被调小"
+        )
+    if not (100_000 < pressure < 200_000):
+        failures.append(
+            f"回归保护的构造失效：压力 {pressure} 未落在 (100k, 200k) 区间，"
+            "该断言将失去鉴别力"
+        )
     return failures
 
 
