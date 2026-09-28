@@ -1202,6 +1202,58 @@ def check_observe_verify_requirements(base_dir: Path) -> list[str]:
     return failures
 
 
+def check_compression_actually_shrinks() -> list[str]:
+    """压缩必须**真的把窗口压到预算之下**——修一个真 bug 的回归保护。
+
+    真实运行暴露的问题：`keep` 只按条数取 `effective_budget // 2`（=200 条），
+    而 200 条大 tool 回执可以轻松超过阈值——实测 max_context_tokens=100k 时
+    单次 prompt 到 **158,789**（超出 59%），"超阈值才压缩"的承诺没兑现；
+    更糟的是阈值附近反复压缩把缓存命中率从 90% 拖到 58%，等效计费反而翻倍。
+
+    `_keep_within_tokens` 给 keep 补上 token 维度，本断言锁住它不再退化。
+    """
+    from react.action import Action
+    from react.context import _KEEP_TOKEN_RATIO
+
+    failures: list[str] = []
+    act = Action(name="act", skill_body="正文")
+
+    # 构造"少量超大消息"：31 条，后 30 条各 20k 字符（≈10k token/条）
+    ctx = SessionContext(max_context_tokens=100_000)
+    ctx.add_user("任务锚点")
+    for _ in range(30):
+        ctx.add_user("x" * 20_000)
+    pressure_before = ctx.pressure_tokens()
+    if pressure_before <= 100_000:
+        failures.append(f"构造失效：压力 {pressure_before} 未超阈值（断言无法生效）")
+
+    # keep 必须被 token 约束住（而不是只受条数约束：200 条）
+    count_keep = max(8, ctx.effective_budget // 2)
+    token_keep = ctx._keep_within_tokens(_KEEP_TOKEN_RATIO)
+    if token_keep >= count_keep:
+        failures.append(
+            f"token 维度未生效：token_keep={token_keep} 未小于条数口径 {count_keep}"
+            f"（构造压力 {pressure_before}）")
+
+    # 真正走一次压缩，压缩后窗口必须显著低于阈值
+    ctx.build_step_messages(act, "执行")
+    if ctx._digest_upto <= 0:
+        failures.append("超阈值却未发生压缩")
+    kept_chars = sum(len(m.get("content") or "") for m in ctx.messages[ctx._digest_upto:])
+    kept_tokens = int(kept_chars / (ctx._factor or 2.0))
+    if kept_tokens > 100_000:
+        failures.append(f"压缩后窗口仍占 {kept_tokens} token（≥ 阈值 100000），压缩没压下去")
+
+    # 小负载不应被误压：压缩只该由预算驱动
+    small = SessionContext(max_context_tokens=100_000)
+    small.add_user("小任务")
+    small.add_assistant("小产物")
+    small.build_step_messages(act, "执行")
+    if small._digest_upto != 0:
+        failures.append("远低于阈值的短会话不应触发压缩")
+    return failures
+
+
 def check_pressure_estimate() -> list[str]:
     """压力计量：实测优先、新增部分靠估算、并用实测在线校准。"""
     failures: list[str] = []

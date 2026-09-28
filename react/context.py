@@ -76,6 +76,13 @@ def estimate_tokens(messages: list[dict], factor: float = 1.0) -> int:
 _MIN_KEEP = 8
 #: 有效窗口预算下限：cap 小于此值时按此值执行（cap=4 这种极端配置仍能正常工作）
 _MIN_BUDGET = 16
+#: 压缩后窗口允许占用的 token 比例（相对 max_context_tokens）。
+#: **这是修一个真 bug**：此前 keep 只按条数取 `effective_budget // 2`（=200 条），
+#: 而 200 条大 tool 回执可以轻松超过 100k——实测单次 prompt 到 158,789（阈值 100k，
+#: 超出 59%），"超阈值才压缩"的承诺没兑现，且因阈值附近反复压缩把缓存命中率从 90%
+#: 拖到 58%，等效计费反而翻倍。压缩要**真的把窗口压下来**才算压缩。
+#: 取 0.4 而非 0.5：留出"纯追加增长"的空间，压缩间隔更长、缓存前缀更稳定。
+_KEEP_TOKEN_RATIO = 0.4
 
 
 @dataclass
@@ -295,10 +302,15 @@ class SessionContext:
         hist_len = len(self.messages)
         if not self._should_compress():
             return  # 未超预算：一切照旧，前缀零改动
-        # 保留量：条数口径下是预算的一半（留出纯追加增长空间）；
-        # token 口径下沿用 _MIN_KEEP 作为不可再少的锚（避免把小任务削成空窗口）。
+        # 保留量有两个口径，取更严格者：
+        #   ① 条数：effective_budget // 2（留出纯追加增长空间）
+        #   ② **token**：max_context_tokens × _KEEP_TOKEN_RATIO —— 关键修复。
+        # 只按条数会漏掉"少量超大消息"：一条上万字符的 tool 回执算 1 条，
+        # 200 条这样的消息远超预算，压缩后窗口几乎没变小。
         budget = self.effective_budget
         keep = max(_MIN_KEEP, budget // 2) if budget > 0 else _MIN_KEEP
+        if self.max_context_tokens > 0:
+            keep = min(keep, self._keep_within_tokens(_KEEP_TOKEN_RATIO))
         # 裁剪起点必须夹在 [max(1, 边界), hist_len-1]：
         # keep 可能**大于账本长度**（条数硬上限调大后，budget//2 很容易超过实际条数），
         # 此时 hist_len - keep 会变成负数，把 _digest_upto 推成负值——之后
@@ -315,6 +327,29 @@ class SessionContext:
                 lines.insert(0, f"- （更早 {omitted} 条已省略）")
             self._digest_text = _DIGEST_HEADER + "\n" + "\n".join(lines)
         self._digest_upto = start
+
+    def _keep_within_tokens(self, ratio: float) -> int:
+        """新→旧累计消息字符，返回不超过 `max_context_tokens * ratio` 的最新条数。
+
+        压缩要**真的把窗口压到预算之下**才算压缩；只按条数保留会漏掉"少量超大消息"
+        （一条上万字符的 tool 回执只算 1 条），于是压缩后窗口几乎没变小、
+        阈值形同虚设，还会因反复压缩作废缓存前缀。
+
+        `_msg_chars` 与本类的压力估算用同一套字符口径；除数取 `_CHARS_PER_TOKEN`
+        的实际系数（含在线校准的 `_factor`），保证与 `pressure_tokens` 同量级。
+        """
+        if not self.messages:
+            return 0
+        limit = max(1, int(self.max_context_tokens * ratio))
+        factor = self._factor if self._factor > 0 else _CHARS_PER_TOKEN
+        total_chars = 0
+        kept = 0
+        for msg in reversed(self.messages):
+            total_chars += _msg_chars(msg)
+            if int(total_chars / factor) > limit:
+                break
+            kept += 1
+        return kept
 
     def build_step_messages(self, action: Action, step_prompt: str) -> list[dict]:
         """组装某一步的完整消息列表。

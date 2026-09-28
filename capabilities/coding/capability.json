@@ -14,10 +14,11 @@
     "error_policy": "边界处显式抛出具体异常（不用裸 except）；内部用 None/默认值降级并记 WARNING；异常不得静默吞掉",
     "log_format": "logging 模块；`业务动作 | 阶段(IN/MAP/ERR/OUT) | key=value`；禁止记录密钥/token/完整 PII",
     "header_style": "8-field-docstring（ROLE/DEPENDS_ON/IN/OUT/OWNS_FIELDS/SIDE/ERRORS/LOG）",
+    "header_applies_when": "需要**跨函数数据流分析**时才用（判定：函数 ≥ 10 个，或存在『一个字段被多个函数读写』的情形，或任务是 MODIFY 既有代码）。单文件小工具 / 函数 < 10 个时不强制——此时用常规 docstring 说明职责即可，8 字段头的 ceremony 收益抵不上成本。判定后要在 PLAN 里写明「本项目是否启用 8 字段头」及理由。",
     "test_framework": "pytest；测试与实现分文件；测试命名 test_<行为>_<条件>",
     "definition_of_done": [
       "python -m pytest -q 全绿（exit=0）",
-      "所有函数带 8 字段头且 7 规则 0 STALE / 0 MISSING",
+      "若 PLAN 判定启用 8 字段头：所有函数带头且 7 规则 0 STALE / 0 MISSING；未启用时不检查此项",
       "有入口时：python -m <pkg> --help 退出码 0",
       "有 ruff 时：python -m ruff check . 无 error（工具不存在则跳过，不算未达成）"
     ],

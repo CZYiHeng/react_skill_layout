@@ -40,7 +40,8 @@ MANIFEST_KEYS = ("name", "version", "description", "requires", "conventions")
 CONVENTION_FIELDS = (
     # 约束组
     "language", "python_version", "layout", "naming", "typing",
-    "error_policy", "log_format", "header_style", "test_framework",
+    "error_policy", "log_format", "header_style", "header_applies_when",
+    "test_framework",
     # 验收组
     "definition_of_done", "verify_command", "forbidden",
 )
@@ -68,6 +69,7 @@ def format_conventions(conv: dict) -> str:
             "error_policy": "错误处理",
             "log_format": "日志格式",
             "header_style": "函数头风格",
+            "header_applies_when": "函数头适用条件",
             "test_framework": "测试框架",
             "python_version": "Python 版本",
             "language": "语言",

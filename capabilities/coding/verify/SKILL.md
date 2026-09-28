@@ -18,7 +18,7 @@ description: VERIFY 阶段（代码档案）——对照任务最初目标做最
 
 1. **需求达成**：产出是否满足最初目标与输出格式（HTML/Excel/CLI 等）？
 2. **完整性**：所有函数已填充（无残留 `# TODO` / `raise NotImplementedError`），整体可运行。
-3. **头一致性**：全量跑 7 规则（OWNS_FIELDS/DEPENDS_ON/SIDE/IN/OUT/LOG/ERRORS），0 STALE、0 MISSING；每个可变/派生字段有且只有一个归属函数。
+3. **头一致性**：**仅当 PLAN 判定启用 8 字段头时**检查——全量跑 7 规则（OWNS_FIELDS/DEPENDS_ON/SIDE/IN/OUT/LOG/ERRORS），0 STALE、0 MISSING；每个可变/派生字段有且只有一个归属函数。未启用时跳过本项并在 reason 里说明「本项目未启用 8 字段头」（不得因为没检查就笼统声称"头一致"）。
 4. **落盘确认**：若启用 `file_write`，确认 `[EXEC: write]` 的目标文件已写入 cwd 内、路径未越界；必要时回读文件核对。
 5. **日志安全**：无密钥/token/完整 PII 泄露，`LOG` 与实际语句匹配。
 
