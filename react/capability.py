@@ -33,7 +33,61 @@ from . import CAPABILITY_API as DEFAULT_CAPABILITY_API
 
 #: `capability.json` 里允许出现的键；未知键报错而不是静默忽略——
 #: 拼错的 `descripton` 会让人对着一个"看起来配了却没生效"的文件排查半天。
-MANIFEST_KEYS = ("name", "version", "description", "requires")
+MANIFEST_KEYS = ("name", "version", "description", "requires", "conventions")
+
+#: `conventions` 允许的字段。分两组，缺任一组都不完整：
+#: **约束（怎么做）** 与 **验收（怎么算做完）**——只有约束就没有人验，只有验收就不统一。
+CONVENTION_FIELDS = (
+    # 约束组
+    "language", "python_version", "layout", "naming", "typing",
+    "error_policy", "log_format", "header_style", "test_framework",
+    # 验收组
+    "definition_of_done", "verify_command", "forbidden",
+)
+#: 规范块标题：恒定注入到每步 prompt 的尾部（skill 正文之后、步骤指令之前）
+CONVENTIONS_HEADING = "# 能力约定（本能力声明的技术栈与验收标准）"
+
+
+def format_conventions(conv: dict) -> str:
+    """把 `conventions` 渲染成注入 prompt 的文本块；为空时返回空串。
+
+    渲染成**人类可读的键值列表**而不是 JSON：这份文本会进入每一步的上下文并被模型
+    反复阅读，JSON 的括号与引号是纯开销。列表元素逐条列出，便于模型逐项对照。
+    """
+    if not isinstance(conv, dict) or not conv:
+        return ""
+    lines: list[str] = []
+    for key in CONVENTION_FIELDS:
+        if key not in conv:
+            continue
+        val = conv[key]
+        label = {
+            "definition_of_done": "完成定义（逐项必须满足）",
+            "verify_command": "建议验收命令",
+            "forbidden": "禁止事项",
+            "error_policy": "错误处理",
+            "log_format": "日志格式",
+            "header_style": "函数头风格",
+            "test_framework": "测试框架",
+            "python_version": "Python 版本",
+            "language": "语言",
+            "layout": "目录布局",
+            "naming": "命名",
+            "typing": "类型标注",
+        }.get(key, key)
+        if isinstance(val, (list, tuple)):
+            items = [str(v) for v in val if str(v).strip()]
+            if not items:
+                continue
+            lines.append(f"- {label}：")
+            lines.extend(f"  {i}. {v}" for i, v in enumerate(items, 1))
+        else:
+            text = str(val).strip()
+            if text:
+                lines.append(f"- {label}：{text}")
+    if not lines:
+        return ""
+    return f"{CONVENTIONS_HEADING}\n" + "\n".join(lines)
 
 #: 保留名：指向仓库自带的通用五阶段 skill（`<base>/skills`）。
 #: 注意**不含空串**——空串是"没指定"的意思，要先让配置 `active_capability` 有机会生效，
@@ -57,7 +111,14 @@ class Capability:
     provided: tuple[str, ...] = ()
     #: 来源说明，用于报错与 --check（是内置、还是某个能力目录）
     source: str = ""
+    #: 能力声明的技术栈与验收标准（`capability.json` 的 conventions）；空 = 不注入
+    conventions: dict = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+
+    @property
+    def conventions_text(self) -> str:
+        """渲染好的规范文本块（未声明时为空串）。"""
+        return format_conventions(self.conventions)
 
     @property
     def complete(self) -> bool:
@@ -95,9 +156,42 @@ def _provided_stages(root: Path) -> tuple[str, ...]:
     return tuple(s for s in ACTION_NAMES if (root / s / "SKILL.md").is_file())
 
 
+def clean_conventions(raw, warns: list[str], where: str) -> dict:
+    """校验 `conventions`：非 dict → 告警丢弃；未知字段 / 值的类型错 → 逐项丢弃。
+
+    逐项丢弃而不是整体拒绝：一个拼错的字段不该让整份技术栈声明失效。
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        warns.append(f"{where} 的 conventions 应为对象，实际 {type(raw).__name__}，已忽略")
+        return {}
+    out: dict = {}
+    for key, val in raw.items():
+        if key not in CONVENTION_FIELDS:
+            warns.append(f"{where} 的 conventions 含未知字段 '{key}'，已忽略"
+                         f"（可用：{', '.join(CONVENTION_FIELDS)}）")
+            continue
+        if isinstance(val, (list, tuple)):
+            if not all(isinstance(v, str) for v in val):
+                warns.append(f"{where} 的 conventions.{key} 列表元素应全为字符串，已忽略")
+                continue
+            if not val:
+                continue
+            out[key] = list(val)
+        elif isinstance(val, str):
+            if val.strip():
+                out[key] = val.strip()
+        else:
+            warns.append(f"{where} 的 conventions.{key} 应为字符串或字符串列表，已忽略")
+    return out
+
+
 def probe(root: Path, name: str = "", source: str = "") -> Capability:
     """把一个目录读成一个能力（不校验存在性，调用方负责）。"""
     data, warns = load_manifest(root)
+    where = f"能力 '{data.get('name') or name or root.name}'"
+    conv = clean_conventions(data.get("conventions"), warns, where)
     # 名字的优先级：manifest.name > 显式传入的 name > 目录名。
     # `default` 能力位于 `<base>/skills`，目录名是 "skills"，但它的能力名必须叫
     # default（否则 --check 与报错里会出现一个用户从未配置过的名字）。
@@ -108,6 +202,7 @@ def probe(root: Path, name: str = "", source: str = "") -> Capability:
         description=str(data.get("description") or ""),
         provided=_provided_stages(root),
         source=source or str(root),
+        conventions=conv,
         warnings=warns,
     )
 

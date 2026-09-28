@@ -103,6 +103,9 @@ class SessionContext:
     max_context_tokens: int = 100000
     # 运行环境信息（OS/shell/cwd/工具可用性），拼进每步 system 提示
     env_info: str = ""
+    #: 能力声明的技术栈与验收标准（`capabilities/*/capability.json` 的 conventions）。
+    #: 由 ReactService 装配时写入；未声明时为空串 → **完全不注入**（行为与从前一致）。
+    conventions_block: str = ""
 
     # ---- 缓存友好的压缩态（前缀只追加，绝不回改已有消息） ----
     #: 摘要当前覆盖的消息下标上界（已摘要的原文不入窗口）。**只增不减**：
@@ -365,9 +368,14 @@ class SessionContext:
         # 五阶段、多轮、工具循环的所有调用共享同一 system 前缀。
         env_block = f"# 运行环境\n{self.env_info}\n\n" if self.env_info else ""
         system = f"{GLOBAL_PROTOCOL}\n\n{env_block}"
+        # 能力规范（conventions）放在 **skill 正文之后、步骤指令之前**：
+        # 它随能力固定、不随步骤变化，放这里与 skill 正文同为"可复用前缀"，
+        # 不会因为规范而额外打断缓存；放到步骤指令之后则会跟着步骤一起变。
+        conv_block = f"{self.conventions_block}\n\n" if self.conventions_block else ""
         stage = (
             f"# 当前阶段：{action.name.upper()}\n\n"
             f"{action.skill_body}\n\n"
+            f"{conv_block}"
             f"# 当前步骤指令\n{step_prompt}"
         )
         # 顺序敏感：摘要跨阶段累积、内容会变，必须放在**最后**（离前缀最远）。

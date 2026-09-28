@@ -413,6 +413,7 @@ class ReactService:
             max_rounds=int(max_rounds or self.cfg.get("max_rounds", 10)),
             max_context_tokens=int(self.cfg.get("max_context_tokens", 100000)),
             env_info=self._build_env_info(),
+            conventions_block=self.capability.conventions_text,
         )
 
     def build_executor(self, allow_exec: bool | None = None,
@@ -492,6 +493,9 @@ class ReactService:
         control = control or AutoControl()
         registry = self.build_registry()
         context = context or self.build_context(max_rounds)
+        # 复用既有上下文时（Web 会话跨任务保持同一 context）也要刷新规范：
+        # 能力可能在两次任务之间换了，而 conventions 是每步 prompt 的一部分。
+        context.conventions_block = self.capability.conventions_text
         executor = self.build_executor(allow_exec, work_dir, allow_outside_work_dir)
         if model is not None:
             act_model = model          # 外部指定了单一模型 → 计划阶段回落到它

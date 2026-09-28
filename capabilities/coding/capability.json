@@ -1,8 +1,32 @@
 {
   "name": "coding",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "写代码能力：8 字段函数头 / 7 规则头-实现一致性 / req-to-code 增量骨架 / solution-review 三维度 / flow-tracer。原目录名 skills_code，已由 capability_aliases 兼容。",
   "requires": {
     "react_agent": ">=0.1.0"
+  },
+  "conventions": {
+    "language": "python",
+    "python_version": ">=3.11",
+    "layout": "src/<pkg>/ 放实现、tests/ 放测试、pyproject.toml 声明依赖与入口",
+    "naming": "模块/函数/变量 snake_case；类与异常 PascalCase；常量 UPPER_SNAKE",
+    "typing": "公开函数签名带类型标注；不引入未声明的第三方类型",
+    "error_policy": "边界处显式抛出具体异常（不用裸 except）；内部用 None/默认值降级并记 WARNING；异常不得静默吞掉",
+    "log_format": "logging 模块；`业务动作 | 阶段(IN/MAP/ERR/OUT) | key=value`；禁止记录密钥/token/完整 PII",
+    "header_style": "8-field-docstring（ROLE/DEPENDS_ON/IN/OUT/OWNS_FIELDS/SIDE/ERRORS/LOG）",
+    "test_framework": "pytest；测试与实现分文件；测试命名 test_<行为>_<条件>",
+    "definition_of_done": [
+      "python -m pytest -q 全绿（exit=0）",
+      "python -m ruff check . 无 error",
+      "入口可跑：python -m <pkg> --help 退出码 0",
+      "所有函数带 8 字段头且 7 规则 0 STALE / 0 MISSING"
+    ],
+    "verify_command": "python -m pytest -q",
+    "forbidden": [
+      "修改测试以迁就实现（如需改测试必须显式声明理由）",
+      "提交密钥或 token",
+      "引入未在 pyproject.toml 声明的依赖",
+      "用裸 except 吞异常"
+    ]
   }
 }

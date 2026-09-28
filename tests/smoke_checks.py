@@ -812,7 +812,7 @@ def check_capability_model(base_dir: Path) -> list[str]:
         if "PARTIAL-ACT" in reg2.get("think").skill_body or not reg2.get("think").skill_body.strip():
             failures.append("partial 未提供的槽位应回退内置默认提示词")
 
-    # 9) 能力名不因目录改名而漂移：probe 用 manifest 的 name 优先于目录名
+    # 9b) 能力名不因目录改名而漂移：manifest 的 name 优先于目录名
     with tempfile.TemporaryDirectory() as td:
         root = Path(td) / "some-dir"
         stages(root)
@@ -887,6 +887,94 @@ def check_capability_model(base_dir: Path) -> list[str]:
             failures.append("reload 后未读到新内容")
         if reg.warnings:
             failures.append(f"reload 后 warnings 未重置：{reg.warnings}")
+
+    # 12) conventions（技术栈 + 验收标准声明）的读取、校验与注入
+    from react.capability import CONVENTION_FIELDS, clean_conventions, format_conventions
+
+    # 12a) 未声明 → **零注入**（这是 default 能力的回归保护点：行为必须与从前一致）
+    svc_plain = ReactService(dict(DEFAULTS), base_dir)
+    if svc_plain.capability.conventions_text:
+        failures.append("未声明 conventions 时不应产生任何注入文本")
+    ctx_plain = svc_plain.build_context()
+    if ctx_plain.conventions_block:
+        failures.append("未声明 conventions 时 context.conventions_block 应为空")
+    tail_plain = ctx_plain.build_step_messages(
+        svc_plain.build_registry().get("act"), "执行")[-1]["content"]
+    if "# 能力约定" in tail_plain:
+        failures.append("未声明 conventions 时尾部 prompt 不应出现规范块")
+
+    # 12b) 渲染包含两组字段（约束 + 验收），且列表项逐条编号
+    text = format_conventions({
+        "language": "python", "layout": "src/ + tests/",
+        "definition_of_done": ["pytest 全绿", "ruff 无 error"],
+        "verify_command": "python -m pytest -q", "forbidden": ["改测试迁就实现"],
+    })
+    for must in ("语言：python", "目录布局", "完成定义", "pytest 全绿", "ruff 无 error",
+                 "建议验收命令", "python -m pytest -q", "禁止事项", "改测试迁就实现"):
+        if must not in text:
+            failures.append(f"规范渲染缺少：{must}")
+
+    # 12c) 类型校验：逐项丢弃而非整体失效（一个拼错的字段不该毁掉整份声明）
+    warns: list[str] = []
+    kept = clean_conventions(
+        {"language": "python", "bogus": "x", "definition_of_done": [1, 2],
+         "naming": 123, "layout": "  ok  "}, warns, "能力 T")
+    if kept != {"language": "python", "layout": "ok"}:
+        failures.append(f"conventions 逐项校验结果不对：{kept}")
+    joined = " ".join(warns)
+    for must in ("bogus", "definition_of_done", "naming"):
+        if must not in joined:
+            failures.append(f"conventions 非法项未告警：{must}")
+    w2: list[str] = []
+    if clean_conventions("oops", w2, "能力 U") != {} or not w2:
+        failures.append("conventions 非 dict 时应告警并丢弃")
+
+    # 12d) 注入位置：规范在 skill 正文之后、步骤指令**之前**——
+    #      它随能力固定、不随步骤变化，放这里才能与 skill 正文同享缓存前缀。
+    with tempfile.TemporaryDirectory() as td:
+        sb = Path(td)
+        import shutil as _sh
+        _sh.copytree(base_dir / "skills", sb / "skills")
+        cap = sb / "capabilities" / "cnv"
+        _sh.copytree(base_dir / "skills", cap)
+        (cap / "capability.json").write_text(json.dumps({
+            "name": "cnv", "version": "1.0.0",
+            "conventions": {"language": "python", "definition_of_done": ["pytest 全绿"]},
+        }, ensure_ascii=False), encoding="utf-8")
+        svc = ReactService(dict(DEFAULTS, active_capability="cnv"), sb)
+        reg = svc.build_registry()
+        ctx = svc.build_context()
+        tail = ctx.build_step_messages(reg.get("act"), "执行当前步骤")[-1]["content"]
+        i_stage, i_conv, i_step = (tail.find("# 当前阶段"), tail.find("# 能力约定"),
+                                   tail.find("# 当前步骤指令"))
+        if i_conv < 0:
+            failures.append("声明了 conventions 却未注入到 prompt")
+        elif not (i_stage < i_conv < i_step):
+            failures.append(
+                f"规范注入位置不对（阶段={i_stage} 规范={i_conv} 步骤={i_step}），"
+                "应在 skill 正文之后、步骤指令之前")
+        # system 必须仍逐字节静态（缓存契约）：与能力/阶段无关
+        sys_a = ctx.build_step_messages(reg.get("act"), "x")[0]["content"]
+        sys_b = ctx.build_step_messages(reg.get("think"), "y")[0]["content"]
+        if sys_a != sys_b:
+            failures.append("注入 conventions 后 system 不再静态（破坏缓存前缀契约）")
+
+    # 12e) 仓库自带的 coding 能力应声明了完整规范（首批 = Python 技术栈）
+    coding_manifest = base_dir / "capabilities" / "coding" / "capability.json"
+    if coding_manifest.is_file():
+        data = json.loads(coding_manifest.read_text(encoding="utf-8"))
+        conv = data.get("conventions") or {}
+        if not conv:
+            failures.append("coding 能力未声明 conventions（首批应为 Python 技术栈）")
+        else:
+            for key in ("language", "definition_of_done", "verify_command", "forbidden"):
+                if key not in conv:
+                    failures.append(f"coding 的 conventions 缺少 {key}")
+            if conv.get("language") != "python":
+                failures.append(f"coding 的 conventions.language 应为 python，实际 {conv.get('language')}")
+            unknown = [k for k in conv if k not in CONVENTION_FIELDS]
+            if unknown:
+                failures.append(f"coding 的 conventions 含未支持字段：{unknown}")
     return failures
 
 
