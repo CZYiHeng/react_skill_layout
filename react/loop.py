@@ -425,6 +425,18 @@ class ReActLoop:
     # 会话级 token 统计：每次模型调用追加一条 {phase, tokens, usage, elapsed_sec, ts}
     token_stats: list = field(default_factory=list, init=False)
 
+    @property
+    def tool_handler(self):
+        """统一的工具执行回调；无执行器时为 None。
+
+        以前只有 ACT 把 handler 传给 `_step`，于是 THINK/OBSERVE/VERIFY 与所有修复轮的
+        工具调用都落入占位分支（回执是模型自己的文本或字面量 "ok"）——模型"以为跑了"。
+        改成一处派生、各处复用，避免"哪个阶段忘了接线"这类漏改。
+        """
+        if self.executor is None:
+            return None
+        return lambda name, args: self.executor.run_tool(name, args)
+
     # ------------------------------------------------------------------
 
     def run(self, user_input: str, *, continue_session: bool = False) -> LoopResult:
@@ -485,11 +497,11 @@ class ReActLoop:
                 think_prompt += "（注意：上一阶段已连续多次未通过，你必须选择 PLAN 重新规划。）"
                 self.force_plan = False
             think_out = self._step("think", think_prompt, run_gate=False,
-                                   tools=ALL_TOOLS)
+                                   tools=ALL_TOOLS, tool_handler=self.tool_handler)
             if self._aborted:
                 return LoopResult("aborted", self.context.round_no, "人工中止")
             decision = self._resolve("think", think_out, self._decision_extract,
-                                     tools=ALL_TOOLS)
+                                     tools=ALL_TOOLS, tool_handler=self.tool_handler)
 
             if decision == "ASK":
                 self._ask_count += 1
@@ -521,7 +533,7 @@ class ReActLoop:
                 if self._aborted:
                     return LoopResult("aborted", self.context.round_no, "人工中止")
                 verdict = self._resolve("verify", vout, self._verdict_extract,
-                                        tools=ALL_TOOLS)
+                                        tools=ALL_TOOLS, tool_handler=self.tool_handler)
                 # 终检验收必拦：人工可在此纠偏，纠偏后不许直接 done
                 if self._apply_gate_if_needed("verify", verdict, reason="最终验收"):
                     verdict = "不通过"
@@ -560,9 +572,7 @@ class ReActLoop:
 
         未绑定执行器时不注入工具（纯文本产物，等价原 _step("act")）。
         """
-        handler = None
-        if self.executor is not None:
-            handler = lambda name, args: self.executor.run_tool(name, args)  # noqa: E731
+        handler = self.tool_handler
         last = None
         self._native_tool_ran = False
         for _ in range(_TOOL_LOOP_MAX):
@@ -587,7 +597,8 @@ class ReActLoop:
 
     def _round_rest(self, decision: str) -> None:
         if decision == "PLAN":
-            plan_out = self._step("plan", "请为当前任务制定执行计划。")
+            plan_out = self._step("plan", "请为当前任务制定执行计划。",
+                                  tools=ALL_TOOLS, tool_handler=self.tool_handler)
             if self._aborted:
                 return
             steps = parse_plan_steps(plan_out.raw)
@@ -668,11 +679,12 @@ class ReActLoop:
             "★ 若两者数量不一致，说明产物未被完整执行，必须判定为 fail。\n"
             f"【待核对产物】\n{result_text}{exec_note}"
         )
-        obs_out = self._step("observe", obs_prompt, tools=ALL_TOOLS)
+        obs_out = self._step("observe", obs_prompt, tools=ALL_TOOLS,
+                             tool_handler=self.tool_handler)
         if self._aborted:
             return
         verdict = self._resolve("observe", obs_out, self._verdict_extract,
-                                tools=ALL_TOOLS)
+                                tools=ALL_TOOLS, tool_handler=self.tool_handler)
 
         if verdict == "通过":
             self._misses = 0
@@ -702,7 +714,7 @@ class ReActLoop:
 
     def _step_verify(self) -> StepOutput:
         return self._step("verify", "请对照任务最初目标做最终验收，给出结论。",
-                          tools=ALL_TOOLS)
+                          tools=ALL_TOOLS, tool_handler=self.tool_handler)
 
     # ------------------------------------------------------------------
     # 人工交互
@@ -859,8 +871,16 @@ class ReActLoop:
                     self.render.info(f"↳ 工具 {name} → {result[:300]}")
                 self._tool_loop_pending = True
             else:
+                # 无 tool_handler：本阶段的工具**不会真正执行**。此前这里写 `content or "ok"`，
+                # 让模型收到一条看起来成功的回执，于是"我以为我读了文件/跑了测试"——
+                # 静默失败，轨迹看起来完全正常。现在显式说明未执行，让模型能据此调整
+                # （要么改用文本结论，要么如实标注"未验证"）。
                 for tc in resp.tool_calls:
-                    self.context.add_tool(tc["id"], content or "ok")
+                    self.context.add_tool(
+                        tc["id"],
+                        f"（工具 {tc['function']['name']} 未执行："
+                        f"该阶段的工具执行未接线或执行器未启用）",
+                    )
         elif resp.tool_name and not resp.text.strip():
             self.context.add_assistant(parsed)
         else:
@@ -895,12 +915,15 @@ class ReActLoop:
 
     def _resolve(self, action_name: str, out: StepOutput, extract,
                  tools: list[dict] | None = None,
-                 max_retry: int = _REPAIR_MAX) -> str:
+                 max_retry: int = _REPAIR_MAX,
+                 tool_handler=None) -> str:
         """取得合法控制信号：工具/文本命中即用；歧义则自修，仍失败回落安全默认。
 
         extract 返回 (值, 是否命中)；歧义时其值已是安全默认
         （think→ESCALATE 移交人工；判定→不通过），确保绝不静默乐观通过。
         修复轮不进人工 gate（run_gate=False），避免纠偏打断；每次尝试透明渲染。
+        `tool_handler` 必须与主步一致地透传：修复轮同样可能需要读文件/跑命令来
+        给出合法结论，不透传就会退化成"工具未执行"的占位回执。
         """
         value, ok = extract(out)
         if ok:
@@ -910,7 +933,8 @@ class ReActLoop:
         attempts = 0
         while not ok and attempts < max_retry:
             attempts += 1
-            out = self._step(action_name, hint, run_gate=False, tools=tools)
+            out = self._step(action_name, hint, run_gate=False, tools=tools,
+                             tool_handler=tool_handler)
             if self._aborted:
                 return value
             value, ok = extract(out)

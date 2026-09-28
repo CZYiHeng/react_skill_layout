@@ -890,6 +890,105 @@ def check_capability_model(base_dir: Path) -> list[str]:
     return failures
 
 
+def check_tool_wiring(base_dir: Path) -> list[str]:
+    """工具执行接线：**每个阶段**的工具调用都要真执行，未接线时不得伪装成功。
+
+    修的是一个静默失败：此前只有 ACT 把 tool_handler 传给 `_step`，其余阶段与修复轮的
+    工具调用落入占位分支，回执是模型自己的文本或字面量 "ok"——模型"以为读了文件/跑了
+    测试"。轨迹看起来完全正常，所以这个 bug 靠人看是发现不了的，必须有断言兜住。
+    """
+    from react.action import ACTION_NAMES
+    from react.model import ModelResponse
+    from react.render import RichRenderer
+    from react.loop import ReActLoop
+
+    failures: list[str] = []
+
+    registry = ActionRegistry()
+    registry.load(base_dir / "skills")
+
+    class _ToolCallingClient:
+        """每步只发一个工具调用（不产出正文），用于观察回执怎么被写回。"""
+
+        def __init__(self):
+            self.n = 0
+
+        def complete(self, messages, on_token=None, tools=None):
+            self.n += 1
+            tc = [{"id": f"call_{self.n}", "type": "function",
+                   "function": {"name": "read", "arguments": '{"path": "x.py"}'}}]
+            return ModelResponse(text="", tokens=1, elapsed_sec=0.01,
+                                 tool_name="read", tool_args={"path": "x.py"},
+                                 tool_calls=tc, usage={"prompt": 1, "completion": 1,
+                                                       "total": 2, "cached": 0})
+
+    def _run(handler):
+        ctx = SessionContext(max_rounds=3)
+        ctx.add_user("接线测试")
+        client = _ToolCallingClient()
+        loop = ReActLoop(registry, ctx, client,
+                         RichRenderer(None, show_reasoning=False),
+                         gate=None, ask=lambda q: "ok", executor=None)
+        loop._step("observe", "核对", tools=None, tool_handler=handler)
+        # 必须按**本步那次工具调用的 id** 定位回执：账本里还有别的 role=tool 消息
+        # （例如 loop 在未绑定执行器时写的"（未绑定执行器，未执行…）"），
+        # 用"最后一条 role=tool"会被那些消息冒充，导致断言永远成立。
+        want_id = f"call_{client.n}"
+        for m in ctx.messages:
+            if m.get("role") == "tool" and m.get("tool_call_id") == want_id:
+                return m.get("content", "")
+        return ""
+
+    # 1) 未接线（无 handler）→ 本次工具调用的回执必须显式说明"未执行"，不得伪装成功
+    receipt = _run(None)
+    if not receipt:
+        failures.append("未按 tool_call_id 找到本次工具调用的回执（断言无法定位）")
+    elif "未执行" not in receipt:
+        failures.append(f"无 handler 时回执未标注未执行，实际：{receipt[:60]!r}")
+    elif receipt.strip() in ("ok", ""):
+        failures.append("无 handler 时回执仍在伪装成功（空或 'ok'）")
+
+    # 2) 已接线 → 工具真的被调用，回执是执行结果而非占位文本
+    seen: list[tuple[str, dict]] = []
+    receipt2 = _run(lambda name, args: (seen.append((name, args)), "真实回执")[1])
+    if not seen:
+        failures.append("有 handler 时工具未被调用")
+    elif seen[0][0] != "read":
+        failures.append(f"工具名传递错误：{seen[0][0]}")
+    if receipt2 != "真实回执":
+        failures.append(f"已接线时回执未采用工具返回值，实际：{receipt2[:60]!r}")
+
+    # 3) 执行器为 None 时 tool_handler 属性必须为 None（否则占位分支不会触发）
+    loop_none = ReActLoop(registry, SessionContext(max_rounds=3), _ToolCallingClient(),
+                          RichRenderer(None, show_reasoning=False),
+                          gate=None, ask=lambda q: "ok", executor=None)
+    if loop_none.tool_handler is not None:
+        failures.append("executor=None 时 tool_handler 应为 None")
+
+    # 4) 契约检查：所有 _step/_resolve 调用点都必须接上 handler。
+    #    这条是"修复轮也执行工具"的保证——修复轮走的就是 `_resolve` 内部的 `_step`，
+    #    只要 handler 透传到 `_resolve`，修复轮的语义就与主步一致（无需再跑一遍循环验证）。
+    import re
+    src = (base_dir / "react" / "loop.py").read_text(encoding="utf-8").splitlines()
+    missing: list[int] = []
+    for i, line in enumerate(src, 1):
+        if not re.search(r"self\._(step|resolve)\(", line):
+            continue
+        buf, j = [line.rstrip()], i - 1
+        while buf[-1].count("(") > buf[-1].count(")") and j + 1 < len(src):
+            j += 1
+            buf.append(src[j].rstrip())
+        seg = " ".join(x.strip() for x in buf)
+        # ACT 用局部别名 handler（= self.tool_handler），其余用属性；两者都算接线
+        if "tool_handler" not in seg:
+            missing.append(i)
+    if missing:
+        failures.append(f"这些调用点未接工具执行（行号）：{missing}")
+    if len([1 for l in src if re.search(r"self\._(step|resolve)\(", l)]) < 8:
+        failures.append("调用点数量异常，契约检查可能失效（实现结构已变）")
+    return failures
+
+
 def check_pressure_estimate() -> list[str]:
     """压力计量：实测优先、新增部分靠估算、并用实测在线校准。"""
     failures: list[str] = []
