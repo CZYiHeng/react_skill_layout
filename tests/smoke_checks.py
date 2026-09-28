@@ -967,25 +967,122 @@ def check_tool_wiring(base_dir: Path) -> list[str]:
 
     # 4) 契约检查：所有 _step/_resolve 调用点都必须接上 handler。
     #    这条是"修复轮也执行工具"的保证——修复轮走的就是 `_resolve` 内部的 `_step`，
-    #    只要 handler 透传到 `_resolve`，修复轮的语义就与主步一致（无需再跑一遍循环验证）。
+    #    只要 handler 透传到 `_resolve`，修复轮的语义就与主步一致。
+    #    用固定行窗口而非括号配平：调用可能写成多行（第一行只有 `self._step(`），
+    #    配平逻辑会在多行形式下提前退出，把已接线的调用点误报为缺失。
     import re
     src = (base_dir / "react" / "loop.py").read_text(encoding="utf-8").splitlines()
     missing: list[int] = []
+    calls = 0
     for i, line in enumerate(src, 1):
         if not re.search(r"self\._(step|resolve)\(", line):
             continue
-        buf, j = [line.rstrip()], i - 1
-        while buf[-1].count("(") > buf[-1].count(")") and j + 1 < len(src):
-            j += 1
-            buf.append(src[j].rstrip())
-        seg = " ".join(x.strip() for x in buf)
+        calls += 1
+        window = " ".join(x.strip() for x in src[i - 1:i + 4])
         # ACT 用局部别名 handler（= self.tool_handler），其余用属性；两者都算接线
-        if "tool_handler" not in seg:
+        if "tool_handler" not in window:
             missing.append(i)
     if missing:
         failures.append(f"这些调用点未接工具执行（行号）：{missing}")
-    if len([1 for l in src if re.search(r"self\._(step|resolve)\(", l)]) < 8:
-        failures.append("调用点数量异常，契约检查可能失效（实现结构已变）")
+    if calls < 8:
+        failures.append(f"_step/_resolve 调用点只有 {calls} 个，契约检查可能失效（结构已变）")
+    return failures
+
+
+def check_observe_verify_requirements(base_dir: Path) -> list[str]:
+    """OBSERVE/VERIFY 必须要求"真实证据"，且执行器未启用时**正确降级**。
+
+    补的洞：
+    - OBSERVE 判 pass 只依据"声明 N 条 vs 回显 M 条"的文本计数，而回显被截断到
+      4000 字符，**截断掉的部分无人核对**；
+    - VERIFY 的 prompt 只说"给出结论"，**没有实测要求**，于是可以纯文本宣称
+      "测试通过"而从未运行。
+
+    降级同样是重点：执行器没开时不能要求跑命令（那样无解，任务必然失败），
+    但也不能让模型声称跑过——必须明确要求标注"未实测"。
+    """
+    from react.executor import _OUTPUT_LIMIT
+    from react.loop import ReActLoop
+    from react.model import MockClient
+    from react.render import RichRenderer
+
+    class _StubExecutor:
+        """最小执行器替身：只要非 None，`tool_handler` 就可用。"""
+
+        def run_tool(self, name: str, args: dict) -> str:
+            return "回执"
+
+    failures: list[str] = []
+    registry = ActionRegistry()
+    registry.load(base_dir / "skills")
+
+    def _capture(executor):
+        """跑一次 ACT 轮 + 一次 VERIFY，返回 {阶段: prompt}。"""
+        ctx = SessionContext(max_rounds=3)
+        ctx.add_user("需求检查")
+        loop = ReActLoop(registry, ctx, MockClient(), RichRenderer(None, show_reasoning=False),
+                         gate=None, ask=lambda q: "ok", executor=executor)
+        captured: dict = {}
+        orig = loop._step
+
+        def spy(name, prompt, **kw):
+            captured[name] = prompt
+            return orig(name, prompt, **kw)
+
+        loop._step = spy
+        try:
+            loop._round_rest("ACT")      # 覆盖 OBSERVE 的 prompt 构造路径
+        except Exception:  # noqa: BLE001   只关心 prompt，流程异常不影响本断言
+            pass
+        try:
+            loop._step_verify()          # 覆盖 VERIFY 的 prompt
+        except Exception:  # noqa: BLE001
+            pass
+        return loop, captured
+
+    # 断言必须检查**具体子串**而不是"必须/核对"这类泛词：泛词在 prompt 的别处也出现，
+    # 于是删掉强制要求后断言依然成立——反向验证抓到过这个漏洞（删掉 OBSERVE 的强制
+    # 核对要求，断言仍通过）。
+    MUST_OBSERVE = "判 pass 前**必须**用工具核对至少一项具体可验证事实"
+    MUST_TRUNC = f"可能被截断（单条回显上限 {_OUTPUT_LIMIT} 字符）"
+    MUST_VERIFY = "未实际运行不得声称通过"
+    MUST_LEDGER = "逐条**列出每个编号"
+
+    # 1) 有执行器：必须要求核对真实产物 + 告知截断上限 + 实测并引用回执 + 逐条对账
+    loop_on, cap_on = _capture(_StubExecutor())
+    if loop_on.tool_handler is None:
+        failures.append("有执行器时 tool_handler 不应为 None（前置不成立）")
+    obs = cap_on.get("observe", "")
+    ver = cap_on.get("verify", "")
+    if not obs:
+        failures.append("未捕获到 OBSERVE 的 prompt（断言无法生效）")
+    else:
+        if MUST_OBSERVE not in obs:
+            failures.append("有执行器时 OBSERVE 未要求核对真实产物")
+        if MUST_TRUNC not in obs:
+            failures.append(f"OBSERVE 未告知回显截断上限（{_OUTPUT_LIMIT}）")
+    if not ver:
+        failures.append("未捕获到 VERIFY 的 prompt（断言无法生效）")
+    else:
+        if MUST_VERIFY not in ver:
+            failures.append("有执行器时 VERIFY 未要求实测并引用回执")
+        if MUST_LEDGER not in ver:
+            failures.append("VERIFY 未要求需求台账逐条对账")
+
+    # 2) 无执行器：必须降级——要求标注"未实测"，且不得再要求跑命令（无解）
+    loop_off, cap_off = _capture(None)
+    if loop_off.tool_handler is not None:
+        failures.append("executor=None 时 tool_handler 应为 None（降级前提不成立）")
+    obs_off = cap_off.get("observe", "")
+    ver_off = cap_off.get("verify", "")
+    if "未实测" not in obs_off:
+        failures.append("无执行器时 OBSERVE 未要求标注「未实测」")
+    if "必须**用工具核对" in obs_off:
+        failures.append("无执行器时 OBSERVE 仍要求用工具核对（无解，必然失败）")
+    if "未实测" not in ver_off:
+        failures.append("无执行器时 VERIFY 未要求标注「未实测」")
+    if "必须**实际运行" in ver_off:
+        failures.append("无执行器时 VERIFY 仍要求实际运行（无解）")
     return failures
 
 

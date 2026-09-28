@@ -20,7 +20,7 @@ from typing import Callable, Protocol
 
 from .action import ActionRegistry
 from .context import SessionContext
-from .executor import Executor
+from .executor import _OUTPUT_LIMIT, Executor
 from .model import ModelClient
 from .render import Renderer  # 协议唯一定义处（此前本文件有一份残缺副本）
 
@@ -671,12 +671,28 @@ class ReActLoop:
 
         # OBSERVE：计划标准是唯一真相源，ACT 的 [CHECK] 仅在计划未给标准时兜底
         # （此前两者并列喂入，等于让标准被生产两次、消费一次）
+        #
+        # 「必须核对真实产物」这条是补一个洞：此前判 pass 只依据"声明执行 N 条 vs
+        # 回显 M 条"的文本计数，而执行回显被截断到 _OUTPUT_LIMIT 字符（见 executor），
+        # **截断掉的部分无人核对**。于是"我写了 3 个文件"与"真的写了 3 个文件"不可区分。
+        # 有执行器时要求至少核对一项具体事实；没有执行器时不能要求（那样无解）。
+        verify_clause = (
+            "★ 判 pass 前**必须**用工具核对至少一项具体可验证事实（读文件、grep 关键实现、"
+            "或跑命令），并在 reason 里引用核对结果（文件路径 + 关键行，或命令 + exit=）。"
+            "仅凭产物正文自述就判 pass 视为无效判定。\n"
+            if self.tool_handler is not None else
+            "（执行器未启用，无法核对真实产物：请只依据正文判定，并在 reason 里说明"
+            "「未实测」；不要声称已运行过任何命令。）\n"
+        )
         obs_prompt = (
             "请核对待核对产物是否满足成功标准，给出判定。\n"
             f"【完成标准】{criteria or check or '（计划与 ACT 均未指定标准）'}\n"
             f"【本次声明的执行请求】{len(exec_reqs)} 个\n"
             f"【实际执行回显】{exec_done} 条\n"
             "★ 若两者数量不一致，说明产物未被完整执行，必须判定为 fail。\n"
+            f"★ 下方【待核对产物】可能被截断（单条回显上限 {_OUTPUT_LIMIT} 字符），"
+            "截断处不得默认视为正确——需要时用工具读取完整文件。\n"
+            + verify_clause +
             f"【待核对产物】\n{result_text}{exec_note}"
         )
         obs_out = self._step("observe", obs_prompt, tools=ALL_TOOLS,
@@ -713,8 +729,28 @@ class ReActLoop:
     # ------------------------------------------------------------------
 
     def _step_verify(self) -> StepOutput:
-        return self._step("verify", "请对照任务最初目标做最终验收，给出结论。",
-                          tools=ALL_TOOLS, tool_handler=self.tool_handler)
+        """最终验收：对照任务最初目标做终检。
+
+        补的洞：此前 prompt 只说"给出结论"，**没有任何实测要求**——模型可以纯文本
+        宣称"测试通过"而从未运行过。而 VERIFY 的判定决定了是否 done，是整个流程
+        最后一关，所以这里把"证据"变成硬要求（有执行器时）。
+        """
+        evidence = (
+            "★ 若有可执行的工程产出（代码/脚本/配置），**必须**实际运行构建或测试，"
+            "并在 reason 里引用真实回执（命令 + exit=）；未实际运行不得声称通过。"
+            "若本次任务没有可运行产物（纯咨询/分析），明确说明「无产物可实测」并据此判定。\n"
+            if self.tool_handler is not None else
+            "（执行器未启用，无法实测：请只依据已有产物判定，并在 reason 里说明「未实测」。）\n"
+        )
+        ledger = (
+            "★ 需求台账逐条对账：plan 阶段若产出了编号需求（R1、R2…），你必须**逐条**"
+            "列出每个编号及其判定，并引用证据；**有任何编号未提及即不得判 pass**。\n"
+        )
+        return self._step(
+            "verify",
+            "请对照任务最初目标做最终验收，给出结论。\n" + evidence + ledger +
+            "验收不通过时，reason 要写明具体缺口，以便回炉修正。",
+            tools=ALL_TOOLS, tool_handler=self.tool_handler)
 
     # ------------------------------------------------------------------
     # 人工交互
