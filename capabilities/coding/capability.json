@@ -17,9 +17,9 @@
     "test_framework": "pytest；测试与实现分文件；测试命名 test_<行为>_<条件>",
     "definition_of_done": [
       "python -m pytest -q 全绿（exit=0）",
-      "python -m ruff check . 无 error",
-      "入口可跑：python -m <pkg> --help 退出码 0",
-      "所有函数带 8 字段头且 7 规则 0 STALE / 0 MISSING"
+      "所有函数带 8 字段头且 7 规则 0 STALE / 0 MISSING",
+      "有入口时：python -m <pkg> --help 退出码 0",
+      "有 ruff 时：python -m ruff check . 无 error（工具不存在则跳过，不算未达成）"
     ],
     "verify_command": "python -m pytest -q",
     "forbidden": [
