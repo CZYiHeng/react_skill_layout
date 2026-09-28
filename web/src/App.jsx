@@ -502,7 +502,7 @@ export default function App() {
         </main>
 
         <div className={view === 'settings' ? 'host-pane' : 'host-pane pane-hidden'}>
-          <SettingsModal inline allowOutside={state.allowOutside} onSaved={() => {
+          <SettingsModal inline allowOutside={state.allowOutside} workDir={state.workDir} gateMode={state.gateMode} onSaved={() => {
             api.getConfig().then((d) => {
               dispatch({ type: 'config_update', config: api.normalizeConfig(d.config || {}) })
             }).catch(() => {})
@@ -551,6 +551,8 @@ export default function App() {
       {false ? (
         <SettingsModal
           allowOutside={state.allowOutside}
+          workDir={state.workDir}
+          gateMode={state.gateMode}
           onClose={() => {}}
           onSaved={() => {
             // 配置已写回文件：只更新 config 相关字段，不动 items/live/awaiting

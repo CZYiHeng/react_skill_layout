@@ -20,7 +20,10 @@ const SECTIONS = [
   { key: 'workdir', title: '工作目录', desc: 'Agent 干活的根目录与目录越界策略。' },
 ]
 
-export default function SettingsModal({ onClose, onSaved, allowOutside: currentAllowOutside, inline }) {
+export default function SettingsModal({
+  onClose, onSaved, allowOutside: currentAllowOutside, inline,
+  workDir: currentWorkDir, gateMode: currentGateMode,
+}) {
   const [form, setForm] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -43,10 +46,25 @@ export default function SettingsModal({ onClose, onSaved, allowOutside: currentA
       .finally(() => setLoading(false))
   }, [])
 
-  // 左侧开关变化时同步到 form（组件常驻，首次加载后 store 变化不会重新拉配置）
+  // 左侧栏改「闸门档位 / 工作目录 / 允许项目外」时同步到 form。
+  //
+  // 为什么必须同步：这三个字段在运行时**有两份值**——
+  //   · store 的活状态（gateMode / workDir / allowOutside）：每个任务随 payload 下发
+  //     （App.jsx 的 gate_mode、work_dir），**真正决定这次运行的行为**；
+  //   · 磁盘 config.json：下次启动的初始值。
+  // 本组件此前只在挂载时拉一次磁盘值，于是侧栏改了作用域/档位后，设置界面仍显示旧值——
+  // 用户看到的是一个"既不等于生效值、也不等于他刚输入的值"的数字，无从判断当前设置。
+  // 统一以**生效值**为准展示（`!== undefined` 时才覆盖，避免把"未传"当成"清空"）。
   useEffect(() => {
-    setForm((f) => (f ? { ...f, allow_outside_work_dir: currentAllowOutside } : f))
-  }, [currentAllowOutside])
+    setForm((f) => {
+      if (!f) return f
+      const next = { ...f }
+      if (currentWorkDir !== undefined) next.work_dir = currentWorkDir
+      if (currentAllowOutside !== undefined) next.allow_outside_work_dir = currentAllowOutside
+      if (currentGateMode !== undefined) next.gate_mode = currentGateMode
+      return next
+    })
+  }, [currentWorkDir, currentAllowOutside, currentGateMode])
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }))
 
@@ -228,6 +246,10 @@ export default function SettingsModal({ onClose, onSaved, allowOutside: currentA
 
   const loopSection = (
     <>
+      <small style={{ display: 'block', marginBottom: 10, color: 'var(--muted)' }}>
+        「闸门档位」显示的是<strong>当前生效值</strong>（与左侧栏同一个来源）；
+        其余循环参数来自配置文件。
+      </small>
       <label className="set-field">
         <span>闸门档位</span>
         <select value={form?.gate_mode ?? 'auto'} onChange={(e) => set('gate_mode', e.target.value)}>
@@ -255,6 +277,10 @@ export default function SettingsModal({ onClose, onSaved, allowOutside: currentA
 
   const workdirSection = (
     <>
+      <small style={{ display: 'block', marginBottom: 10, color: 'var(--muted)' }}>
+        显示的是<strong>当前生效值</strong>（与左侧栏同一个来源）。这里保存会写进配置文件，
+        作为下次启动的默认值；左侧栏只改本次运行、不落盘。
+      </small>
       {strField('work_dir', '工作目录', 'Agent 干活的目录。相对路径按项目内解析，留空 = 项目根目录；指向项目外须勾选下方开关并填绝对路径')}
       {boolField('allow_outside_work_dir', '允许项目外绝对路径', '勾选后工作目录可指向项目根目录之外（须已存在）')}
     </>
