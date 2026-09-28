@@ -975,6 +975,34 @@ def check_capability_model(base_dir: Path) -> list[str]:
             unknown = [k for k in conv if k not in CONVENTION_FIELDS]
             if unknown:
                 failures.append(f"coding 的 conventions 含未支持字段：{unknown}")
+
+    # 12f) coding 能力的**契约性内容**必须在位（改 md 时被删掉要有断言兜住）。
+    #      这些是"紧贴需求 + 工程化"的载体：台账、目录骨架、真实核对、逐条对账、实测。
+    coding_root = base_dir / "capabilities" / "coding"
+    if coding_root.is_dir():
+        must_have = {
+            "plan": [("[需求台账]", "未声明需求台账产出格式"),
+                     ("[目录骨架]", "未声明目录骨架产出格式"),
+                     ("只增不改", "未声明台账演进规则（只增不改 + 废弃标注）"),
+                     ("不设 2-6 步硬上限", "仍保留步骤数硬上限（多文件工程装不下）")],
+            "act": [("覆盖的需求编号", "未要求声明覆盖的 R 编号"),
+                    ("写完即自测", "未要求改完代码后自测"),
+                    ("遵守能力约定", "未要求遵守 conventions")],
+            "observe": [("需求台账对照", "未声明台账对照要求"),
+                        ("核对真实产物", "未要求核对真实产物（只读正文）")],
+            "verify": [("逐条对账", "未声明需求台账逐条对账"),
+                       ("未实际运行不得声称通过", "未禁止未实测就声称通过"),
+                       ("交付物清单", "未要求交付物清单/复现说明")],
+        }
+        for slot, items in must_have.items():
+            md = coding_root / slot / "SKILL.md"
+            if not md.is_file():
+                failures.append(f"coding 能力缺少 {slot}/SKILL.md")
+                continue
+            body = md.read_text(encoding="utf-8")
+            for token, why in items:
+                if token not in body:
+                    failures.append(f"coding/{slot}/SKILL.md：{why}（缺少「{token}」）")
     return failures
 
 

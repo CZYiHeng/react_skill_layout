@@ -9,13 +9,57 @@ description: PLAN 阶段（代码档案）——把编码任务拆解为带完�
 
 ```
 [PLAN]
-1. <步骤一句话，可独立执行> | 完成标准：<可核对的标准>
+[需求台账]
+R1 | <需求原文（不改写含义）> | 验收：<可执行命令 + 期望> | 落点：<文件:符号>
+R2 | ... | ... | ...
+[目录骨架]
+<目录树，标出每个文件的职责>
+[步骤]
+1. <步骤一句话，可独立执行> | 完成标准：<可核对的标准> | 覆盖：R1,R3
 2. ...
 ```
 
-- 步骤 2-6 个，每步一句话，按依赖顺序排列。
+- 步骤数量**按交付物规模定**：单文件小改 2-3 步；多文件工程按模块展开，**不设 2-6 步硬上限**。
+  每步仍要一句话、可独立执行、按依赖顺序排列。
 - 完成标准必须**可核对**：写「包含什么 / 满足什么条件 / 输出什么结构」，不写「做好」「完善」「合理」这类无法判定的词。
 - 标准是后续 ACT 自查与 OBSERVE 核对的依据。
+
+## 需求台账（工程类交付必出）
+
+把用户原话拆成**编号**需求，一条一行。台账是"紧贴需求"的载体——编号让"漏了哪条"变成
+**可数**的检查，而不是靠语义判断。
+
+| 字段 | 要求 |
+|---|---|
+| `R<n>` | 从 R1 连续编号；**只增不改**（需求变更时新增 R<n+1>，废弃条目标 `(废弃:理由)`，不删除） |
+| 需求 | 用户原话的精简，**不得改写含义**、不得把推测写成需求 |
+| 验收 | **可执行**的验证方式：命令 + 期望结果（`pytest tests/test_x.py::test_y` 退出码 0）。写不出可执行验收的，写"人工确认：<具体看什么>"，但要标明 |
+| 落点 | 文件 + 符号（`src/scan.py:find_duplicates`）。规划期可先写文件，符号留到 ACT 补 |
+
+- **最小 1 条**即可；简单任务不必凑数。但一旦产出，VERIFY 就会**逐条**对账。
+- 验收方式必须真实可跑：项目没有入口就不要写 `--help` 那条——**一条跑不通的验收会让 VERIFY 永远 fail**。
+- 需求里没提到但工程必需的东西（依赖声明、入口、测试）不要塞进台账冒充"用户需求"，
+  它们属于骨架，由 `conventions` 的完成定义约束。
+
+## 目录骨架（工程类交付必出）
+
+按本能力的 `conventions` 声明（语言/布局）给出目录树，标出每个文件的职责。默认 Python 布局：
+
+```
+<项目名>/
+├── pyproject.toml          # 依赖声明与入口（console_scripts / __main__）
+├── README.md               # 怎么跑起来（安装、命令、示例）
+├── src/<pkg>/
+│   ├── __init__.py
+│   ├── __main__.py         # 入口（python -m <pkg>）
+│   └── <模块>.py           # 实现
+└── tests/
+    └── test_<模块>.py      # 与实现分文件
+```
+
+- 骨架是**交付物的一部分**，不是建议：ACT 要把它落盘，OBSERVE 要核对它齐不齐。
+- 依赖必须写进 `pyproject.toml`（或 `conventions` 声明的等价文件），**不允许只用不声明**。
+- 入口必须可跑：`python -m <pkg> --help` 退出码 0。
 
 ## 需求分析（PLAN 前先想清）
 
@@ -71,7 +115,18 @@ def function_name(...):
 
 ```
 [PLAN]
-1. 读取源文件为 DataFrame | 完成标准：read_file 函数存在，ROLE/IN/OUT 完整，返回 DataFrame
-2. 去重去空并标准化字段名 | 完成标准：clean_data 带 OWNS_FIELDS，OWNS_FIELDS 与实现一致
-3. 校验必填字段 | 完成标准：validate_rows 对缺失字段抛 ValueError，ERRORS 已声明
+[需求台账]
+R1 | 扫描指定目录，按内容分组重复文件 | 验收：pytest tests/test_scan.py::test_groups 退出码 0 | 落点：src/dupfinder/scan.py:find_duplicates
+R2 | 默认只报告，--delete 才真删 | 验收：pytest tests/test_cli.py::test_dry_run 退出码 0 | 落点：src/dupfinder/__main__.py:main
+[目录骨架]
+dupfinder/
+├── pyproject.toml        # 依赖 + console_scripts 入口
+├── src/dupfinder/{__init__,__main__,scan,report}.py
+└── tests/{test_scan,test_cli}.py
+[步骤]
+1. 建工程骨架与依赖声明 | 完成标准：pyproject.toml 含入口、src/tests 目录就位 | 覆盖：R1,R2
+2. 读取源文件为 DataFrame | 完成标准：read_file 函数存在，ROLE/IN/OUT 完整，返回 DataFrame | 覆盖：R1
+3. 去重去空并标准化字段名 | 完成标准：clean_data 带 OWNS_FIELDS，OWNS_FIELDS 与实现一致 | 覆盖：R1
+4. 校验必填字段 | 完成标准：validate_rows 对缺失字段抛 ValueError，ERRORS 已声明 | 覆盖：R1
+5. CLI 入口与 --delete 开关 | 完成标准：python -m dupfinder --help 退出码 0；默认不删 | 覆盖：R2
 ```
