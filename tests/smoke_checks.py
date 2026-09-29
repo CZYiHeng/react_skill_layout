@@ -3193,6 +3193,9 @@ def check_requirements_flow(base_dir: Path) -> list[str]:
             failures.append("不产 spec 的能力下，坏掉的 spec 被放行了（应仍拦下）")
 
         # 9) 侧栏能力下拉（用户反馈"页面上没有选 coding 的地方"）
+        #    以及**刷新后看不到 coding**（真事故）：`createSession()` 只在新建会话时
+        #    返回能力清单，而刷新走 restore 分支 → state.capabilities 一直是 null
+        #    → 侧栏退化成兜底的 [{name:'default'}]。
         side = (base_dir / "web" / "src" / "components" / "Sidebar.jsx").read_text(
             encoding="utf-8")
         # 不只看标识符存在——必须真的把它接到 onChange（破坏可以留着 props 不接）
@@ -3202,6 +3205,26 @@ def check_requirements_flow(base_dir: Path) -> list[str]:
             failures.append("侧栏没有渲染能力下拉（缺 select 或清单兜底）")
         if "active_capability" not in app_js:
             failures.append("App 没有提交 active_capability（选了也不生效）")
+
+        store_src = (base_dir / "web" / "src" / "store.js").read_text(encoding="utf-8")
+        restore_block = ""
+        if "case 'restore'" in store_src:
+            restore_block = store_src.split("case 'restore'")[1].split("case '")[0]
+        for field in ("capability", "capabilities"):
+            # ⚠️ 只看"字段名出现"会被 `capabilities: null` 蒙过——必须看**取值右边**
+            #    真的引用了快照 `s.`。
+            if f"{field}: s.{field}" not in restore_block:
+                failures.append(
+                    f"store 的 restore 分支没从快照恢复 {field}——刷新后能力下拉会退化"
+                    "（用户报的「看不到 coding」）")
+        if "case 'capabilities_update'" not in store_src:
+            failures.append("store 没有 capabilities_update（刷新后无法补拉能力清单）")
+        # ⚠️ 不能只查标识符：`const refreshCapabilities = ...` 的定义行里就有它，
+        #    于是"调用被删掉"照样通过。要查**restore 分支里真的调用了**。
+        restore_path = app_js.split("case")[0]          # 占位，真正的判断在下面
+        if "refreshCapabilities()" not in app_js.split("if (saved && saved.sessionId)")[-1]:
+            failures.append("App 没有在 restore 后补拉能力清单（老快照会缺）")
+        _ = restore_path
 
         # 9b) ★ "会不会产 spec"必须**按能力声明判定**，不能恒真/恒假。
         #     恒真时 default 也被当成会产 spec → 又变成"拦了却没人能干活"。

@@ -104,6 +104,21 @@ export default function App() {
   }, [])
 
   // 启动：优先复用本地存储的会话（刷新不丢内容），否则新建
+  // 刷新后补拉"当前能力 + 可用清单"。
+  // 为什么必须补拉：`createSession()` 只在**新建会话**时返回 capability/capabilities，
+  // 而刷新页面走的是 restore 分支（复用已存会话），那条路拿不到清单——
+  // 于是侧栏能力下拉退化成兜底的 [{name:'default'}]，**看不到 coding**（用户报的 bug）。
+  // 用已有的 /api/session 而不是新增端点：它本来就返回这两项。
+  const refreshCapabilities = useCallback(() => {
+    api
+      .createSession()
+      .then((data) => {
+        dispatch({ type: 'capabilities_update',
+                   capability: data.capability, capabilities: data.capabilities })
+      })
+      .catch(() => {})   // 拉不到就保留现状；侧栏仍有兜底，不阻塞界面
+  }, [])
+
   useEffect(() => {
     let cancelled = false
     const saved = loadSession()
@@ -133,6 +148,8 @@ export default function App() {
           // 会话仍在：复用并重建界面历史
           dispatch({ type: 'restore', sessionId: saved.sessionId,
                      snapshot: saved.snapshot || {} })
+          // ★ 必须补拉：restore 的快照里可能没有 capabilities（老快照）
+          refreshCapabilities()
           if (saved.snapshot && saved.snapshot.status === 'running') {
             connectStream(saved.sessionId)
           }
@@ -146,7 +163,7 @@ export default function App() {
       cancelled = true
       closeStreamRef.current?.()
     }
-  }, [connectStream])
+  }, [connectStream, refreshCapabilities])
 
   // 持久化：会话 id + 界面快照写入本地，刷新后用于重建
   useEffect(() => {
@@ -166,11 +183,15 @@ export default function App() {
         workDir: state.workDir,
         allowOutside: state.allowOutside,
         taskSeq: state.taskSeq,
+        // 能力清单也进快照：刷新后 restore 能立刻拿到。
+        // 只存清单不存"当前能力"是有意的——当前能力以配置为准（active_capability），
+        // 避免两处真相漂移。
+        capabilities: state.capabilities,
       },
     })
   }, [state.sessionId, state.items, state.status, state.lastResult, state.awaiting,
       state.gateReason, state.gateCount, state.config, state.binds,
-      state.gateMode, state.workDir, state.allowOutside])
+      state.gateMode, state.workDir, state.allowOutside, state.capabilities])
 
   // 流式更新：仅贴底时自动跟随（瞬间定位，不平滑动画堆叠）
   useEffect(() => {

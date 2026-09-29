@@ -74,10 +74,25 @@ export function reducer(state, action) {
         gateMode: s.gateMode || state.gateMode,
         workDir: s.workDir || '',
         allowOutside: !!s.allowOutside,
+        // ★ 能力清单必须跟着快照一起恢复。此前这两个字段不在这里，
+        //   而刷新页面走的就是 restore 分支 → state.capabilities 一直是初始 null
+        //   → 侧栏能力下拉退化成兜底的 [{name:'default'}]，**看不到 coding**
+        //   （用户报的就是这个）。快照里有就恢复；没有则由 App 的 refreshCapabilities 补拉。
+        capability: s.capability || state.capability,
+        capabilities: s.capabilities || state.capabilities,
         error: null,
         live: null,
         taskSeq: s.taskSeq || 0,
       }
+    }
+
+    case 'capabilities_update': {
+      // 刷新后补拉能力清单用：只更新"当前能力 + 可用清单"，不动其它任何字段。
+      // 与 `restore` 分开是因为 `restore` 会重置 items/awaiting 等界面快照。
+      const next = { ...state }
+      if (action.capability) next.capability = action.capability
+      if (action.capabilities) next.capabilities = action.capabilities
+      return next
     }
 
     case 'config_update': {
