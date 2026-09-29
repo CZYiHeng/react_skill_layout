@@ -35,13 +35,19 @@ from . import CAPABILITY_API as DEFAULT_CAPABILITY_API
 #: 拼错的 `descripton` 会让人对着一个"看起来配了却没生效"的文件排查半天。
 MANIFEST_KEYS = ("name", "version", "description", "requires", "conventions")
 
-#: `conventions` 允许的字段。分两组，缺任一组都不完整：
-#: **约束（怎么做）** 与 **验收（怎么算做完）**——只有约束就没有人验，只有验收就不统一。
+#: `conventions` 允许的字段。分三组，缺任一组都不完整：
+#: **约束（怎么做）**、**验收（怎么算做完）**、**契约（判据从哪来）**。
+#:
+#: ⚠️ **白名单是硬约束**：不在本表里的键会被 `clean_conventions` **静默丢弃**。
+#: 新增 convention 字段时必须同时加到这里，否则会出现"capability.json 里写了、
+#: 但注入 prompt 时不见了"——那比没写更糟：声明的规范不生效，等于规范整体失信。
 CONVENTION_FIELDS = (
     # 约束组
     "language", "python_version", "layout", "naming", "typing",
     "error_policy", "log_format", "header_style", "header_applies_when",
-    "test_framework",
+    "docstring", "test_framework",
+    # 契约组：判据从哪来（与验收执行器对接）
+    "acceptance",
     # 验收组
     "definition_of_done", "verify_command", "forbidden",
 )
@@ -70,6 +76,8 @@ def format_conventions(conv: dict) -> str:
             "log_format": "日志格式",
             "header_style": "函数头风格",
             "header_applies_when": "函数头适用条件",
+            "docstring": "文档要求",
+            "acceptance": "验收判据来源（契约）",
             "test_framework": "测试框架",
             "python_version": "Python 版本",
             "language": "语言",

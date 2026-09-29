@@ -1797,9 +1797,45 @@ def check_capability_exposure(base_dir: Path) -> list[str]:
         failures.append("coding 能力的 conventions 数为 0（约定没被读出）")
 
     # 配置面：active_capability 必须可写（否则界面选了也存不下来）
+    from react.capability import CONVENTION_FIELDS
     from react.webapi import CONFIG_FIELDS
     if "active_capability" not in CONFIG_FIELDS:
         failures.append("CONFIG_FIELDS 缺少 active_capability（界面无法保存能力选择）")
+
+    # ★ capability.json 里写的每个 convention 键都必须在白名单里。
+    #   不在白名单的键会被 clean_conventions **静默丢弃**——"写了却不生效"
+    #   比没写更糟：声明的规范不生效，等于整套规范失信。真实发生过：
+    #   新增了 docstring / acceptance 两个字段，加载后却不见了。
+    import json as _json
+    for cap_dir in sorted((base_dir / "capabilities").glob("*/capability.json")):
+        try:
+            raw = _json.loads(cap_dir.read_text(encoding="utf-8"))
+        except (OSError, _json.JSONDecodeError) as e:
+            failures.append(f"{cap_dir.parent.name}/capability.json 读不了：{e}")
+            continue
+        conv = raw.get("conventions") or {}
+        if not isinstance(conv, dict):
+            failures.append(f"{cap_dir.parent.name} 的 conventions 不是对象")
+            continue
+        dropped = [k for k in conv if k not in CONVENTION_FIELDS]
+        if dropped:
+            failures.append(
+                f"{cap_dir.parent.name}/capability.json 里的 "
+                f"{dropped} 不在 CONVENTION_FIELDS 里，会被静默丢弃"
+                "（要么加进白名单，要么从声明里删掉）")
+
+    # 已取消的 8 字段头不得再出现在 coding 能力的 conventions 里
+    coding_conv = {}
+    _cj = base_dir / "capabilities" / "coding" / "capability.json"
+    if _cj.is_file():
+        try:
+            coding_conv = (_json.loads(_cj.read_text(encoding="utf-8"))
+                           .get("conventions") or {})
+        except (OSError, _json.JSONDecodeError):
+            pass
+    for gone in ("header_style", "header_applies_when"):
+        if gone in coding_conv:
+            failures.append(f"coding 能力仍声明已取消的 {gone}（8 字段头已决议取消）")
 
     # 非法能力名 → **报错并列出可用项**（刻意不静默回退：配置里拼错名字必须立刻知道，
     # 回退成 default 会让人以为在用 coding）。界面侧靠"下拉只列可用能力"来避免误选。
