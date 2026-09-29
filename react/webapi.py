@@ -475,8 +475,6 @@ CONFIG_FIELDS: dict[str, type] = {
     "sandbox_shell": bool, "sandbox_integrity_low": bool,
     "shell_backend": str,
     "gate_mode": str, "work_dir": str, "allow_outside_work_dir": bool,
-    #: 除 work_dir 外额外允许访问的根目录白名单；list 走单独校验分支
-    "extra_roots": list,
     #: 槽位内 skill 变体选择 {"<槽位>": "<变体名>"}；dict 走单独校验分支
     "skill_variants": dict,
     #: 生效能力名（default = 仓库内置）；字符串

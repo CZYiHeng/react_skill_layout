@@ -6,8 +6,9 @@
 
 设计原则（安全默认）：
 - **默认关闭**：enable_shell_exec / enable_file_write 均为 False 时一律拒绝，不越权。
-- **工作目录受限**：文件读写/搜索必须落在 cwd 之内，越界拒绝。
-  想访问 cwd 之外，用显式白名单 `extra_roots`（没有"关闭边界"的开关）。
+- **工作目录受限**：文件读写/搜索、以及 shell 命令，都必须在 cwd 之内。
+  没有白名单，也没有"关掉边界"的开关——要换位置就把 `work_dir` 设过去。
+  shell 的检查见 `_shell_escape`（它防误伤性越界，不是对抗性绕过）。
 - **超时兜底**：shell 执行有超时，避免挂死。
 - **read 默认行数上限**（对齐 Claude Code）：默认 2000 行 + 单行截断 2000 字符，超限提示翻页。
 - 执行回显交回 OBSERVE 作为观察对象，ACT 仍是"产出意图"，执行由框架代劳。
@@ -29,6 +30,18 @@ _OUTPUT_LIMIT = 4000  # 回显截断长度，避免超长输出灌爆上下文�
 _READ_DEFAULT_LINES = 2000   # read 默认最大行数（对齐 Claude Code）
 _READ_MAX_LINE_CHARS = 2000  # read 单行截断长度（对齐 Claude Code）
 
+#: 从 shell 命令里挑出"看起来像路径"的片段，用于判断是否越出 cwd。
+#: 覆盖：盘符绝对路径（`G:\x` / `G:/x`）、UNC（`\\server\share`）、上跳（`..\x`）。
+#: 刻意不匹配 `http://`（冒号前是多字母）与裸文件名，避免误伤正常命令。
+_PATHS_IN_CMD = re.compile(
+    r"""(?:
+        [A-Za-z]:[\\/][^\s"'|&;<>)]*      # G:\three\...  或  G:/three/...
+      | \\\\[^\s"'|&;<>)]+                # \\server\share
+      | (?:\.\.[\\/]|\.\.(?=\s|$))[^\s"'|&;<>)]*   # ..\x  或孤立的 ..
+    )""",
+    re.VERBOSE,
+)
+
 
 class Executor(Protocol):
     """执行器协议：原生工具调用 + 文本协议两种入口，均返回可读执行回显。"""
@@ -49,12 +62,6 @@ class LocalExecutor:
     cwd: Path
     allow_shell: bool = False
     allow_file_write: bool = False
-    #: 除 cwd 之外**额外允许**访问的根目录（显式白名单）。
-    #: 注意这里没有"关掉边界"的开关：工具边界**恒等于 cwd（= 当前 work_dir）+ 本白名单**。
-    #: 曾经有个 `allow_outside` 布尔值用来"允许项目外绝对路径"，它顺带把越界检查整个跳过，
-    #: 于是设了 `work_dir=G:\one` 也会被绝对路径写到 `G:\three`。用户诉求其实只是
-    #: "能在别处建工程"，而那由 `work_dir` 指向哪里决定，不需要放弃边界。
-    extra_roots: tuple[Path, ...] = ()
     timeout_sec: int = 30
     sandbox: bool = False           # shell 是否走 OS 级沙箱（仅 Windows 生效）
     low_integrity: bool = False     # 沙箱内是否降为低完整性级别（需把 cwd 降 IL，默认关）
@@ -132,9 +139,48 @@ class LocalExecutor:
 
     # ------------------------------------------------------------------
 
+    def _shell_escape(self, cmd: str) -> str | None:
+        """检查 shell 命令是否试图离开 cwd。返回拒绝原因，或 None 表示放行。
+
+        为什么需要它：文件工具（read/write/edit/grep）走 `_resolve_path` 受边界约束，
+        但 shell 是把整条命令交给 cmd/bash，cwd 只是"默认目录"——`cd G:\\three` 之后
+        一切都在外面发生。不管住这一条，"只能在当前文件夹处理"就是假的。
+
+        两类处理（刻意的取舍）：
+        - **一律拒绝 `cd` / `chdir` / `pushd` / `popd`**：切换后所有后续动作都在外面，
+          而且模型没有"切回来"的保证。需要别的目录就直接把 work_dir 设过去。
+        - **拒绝把外部路径当作操作目标**（`del/copy/move/type/dir <外部路径>` 等）：
+          这是最常被用来"看/改外面东西"的写法。
+        - **放行**只把外部路径当参数的命令（解释器路径、`-m` 运行、`pip install` 等）：
+          否则 `python -m pytest` 会被误伤，正常任务直接跑不动。
+
+        已知不严密：编码/变量拼接（`set P=G:\\three` 再 `%P%`）能绕开本检查。
+        它防的是**误伤性越界**，不是对抗性绕过——真要隔离得靠 OS 级沙箱
+        （见 `win32_sandbox.py` 与 README 的安全边界说明）。
+        """
+        low = cmd.strip().lower()
+        # 1) 切换工作目录：一律拒绝
+        for token in ("cd ", "cd/", "chdir ", "pushd ", "popd"):
+            if low.startswith(token) or f"&{token.strip()}" in low or f"&&{token.strip()}" in low:
+                return ("（已拒绝：命令试图切换工作目录。本会话只能在当前工作目录内操作；"
+                        f"需要别的目录请把工作目录设为它。当前：{self.cwd.resolve()}）")
+        # 2) 命令里出现的绝对路径/上跳路径，只要不是"只是当参数"，就按越界处理
+        for raw in _PATHS_IN_CMD.findall(cmd):
+            try:
+                p = Path(raw)
+                target = (p if p.is_absolute() else (self.cwd.resolve() / p)).resolve()
+                target.relative_to(self.cwd.resolve())
+            except (ValueError, OSError):
+                return (f"（已拒绝：命令引用了工作目录之外的路径 {raw}。"
+                        f"当前工作目录：{self.cwd.resolve()}）")
+        return None
+
     def _shell(self, cmd: str) -> str:
         if not self.allow_shell:
             return "（已拒绝：shell 执行未启用，请在 config 打开 enable_shell_exec）"
+        escape = self._shell_escape(cmd)
+        if escape:
+            return escape
         if self.sandbox and win32_sandbox.sandbox_available():
             try:
                 return win32_sandbox.run_sandboxed(
@@ -168,23 +214,19 @@ class LocalExecutor:
         return f"exit={proc.returncode}\n{out.strip()[:_OUTPUT_LIMIT]}"
 
     def _allowed_roots(self) -> list[Path]:
-        """可访问的根目录：cwd 恒在其中，其余来自显式白名单。"""
-        roots = [self.cwd.resolve()]
-        for r in self.extra_roots:
-            try:
-                rr = Path(r).resolve()
-            except (OSError, ValueError):
-                continue
-            if rr not in roots:
-                roots.append(rr)
-        return roots
+        """可访问的根目录：**只有 cwd（= 当前 work_dir）**。
+
+        没有白名单、也没有"关掉边界"的开关。曾经有过两种放宽方式，都出过事：
+        - `allow_outside`：顺带把越界检查整个跳过 → 设了 work_dir 也会被写到别处；
+        - `extra_roots`：多根白名单 → 边界变成"多目录"，与"只能在当前文件夹干活"的心智不符。
+        现在只有一条规则：**cwd 之内**。
+        """
+        return [self.cwd.resolve()]
 
     def _resolve_path(self, path: str):
         """解析路径并做越界检查。越界返回 None。
 
-        边界 = `cwd`（当前 work_dir）+ `extra_roots`，**没有"关闭边界"的分支**：
-        想往外写就在白名单里显式加根目录，而不是把检查整个跳过——
-        "设了工作目录却还能被绝对路径写出去"正是那样来的。
+        边界 = `cwd`（当前 `work_dir`），**没有放行分支**。
         """
         target = (self.cwd.resolve() / path).resolve()
         for root in self._allowed_roots():

@@ -68,9 +68,6 @@ DEFAULTS: dict = {
     #: 加 `extra_roots` 白名单。此前它兼作"放行任意绝对路径"，于是设了 work_dir
     #: 也会被绝对路径写到别处——用户诉求其实只是前者。
     "allow_outside_work_dir": False,
-    #: 除 `work_dir` 之外**额外允许访问**的根目录白名单（绝对路径或项目内相对路径）。
-    #: 需要引用/维护另一个目录时显式列在这里——这是"访问外部文件夹"的唯一开关。
-    "extra_roots": [],
     "plan_model": "",            # 计划阶段专用模型（推理模型如 deepseek-reasoner）；空=与 model 相同
     "plan_timeout_sec": 300,     # 计划模型超时（推理模型更慢，默认更长）
     #: 生效的能力（写齐五阶段的一套 skill）。`default` = 仓库自带的 `<base>/skills`。

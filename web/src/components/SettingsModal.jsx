@@ -281,23 +281,9 @@ export default function SettingsModal({
         显示的是<strong>当前生效值</strong>（与左侧栏同一个来源）。这里保存会写进配置文件，
         作为下次启动的默认值；左侧栏只改本次运行、不落盘。
       </small>
-      {strField('work_dir', '工作目录', 'Agent 干活的目录 = 工具边界。相对路径按项目内解析，留空 = 项目根目录；要点到项目外（如 G:\\one）须勾选下方开关并填绝对路径')}
+      {strField('work_dir', '工作目录', 'Agent 干活的目录 = 工具边界（含 shell）。相对路径按项目内解析，留空 = 项目根目录；要点到项目外（如 G:\\one）须勾选下方开关并填绝对路径')}
       {boolField('allow_outside_work_dir', '在项目外使用工作目录',
-        '打开后「工作目录」可以指向 react-agent 之外的文件夹（例如在 G:\\one 建工程）。注意它只决定工作目录的位置，不放宽工具边界——文件读写仍限制在工作目录（加上下方白名单）之内')}
-      <label className="set-field">
-        <span>额外允许的根目录</span>
-        <textarea
-          rows={3}
-          value={(form?.extra_roots || []).join('\n')}
-          placeholder={'每行一个绝对路径，例如：\nG:\\three'}
-          onChange={(e) => set('extra_roots',
-            e.target.value.split('\n').map((s) => s.trim()).filter(Boolean))}
-        />
-        <small style={{ color: 'var(--muted)' }}>
-          需要读写「工作目录」之外的文件夹时，在这里显式列出（每行一个）。
-          这是访问外部文件夹的唯一开关；留空则只能动工作目录内的文件。
-        </small>
-      </label>
+        '打开后「工作目录」可以指向 react-agent 之外的文件夹（例如在 G:\\one 建工程）。它只决定工作目录**在哪**；文件读写与 shell 都被限制在该目录之内')}
     </>
   )
 
