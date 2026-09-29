@@ -2959,6 +2959,15 @@ def check_requirements_flow(base_dir: Path) -> list[str]:
             encoding="utf-8")
         if "disabled={submitting || unresolvedCount > 0}" not in gate_src_now:
             failures.append("确认按钮未选完时也可点（应 disabled 含 unresolvedCount > 0）")
+        # ★ 「确认」必须走两步，否则成功后后端不发新事件 → 前端永远停在"正在提交…"
+        #   （真事故：用户点确认，spec.json 确实写好了 confirmed:true，界面却不动）
+        if "onResolve?.(null, null, body.join(';;'))" not in gate_src_now:
+            failures.append("确认时没有先落盘歧义决定（应 onResolve 批量提交决定）")
+        if "[confirm]'].join(';;')" in gate_src_now:
+            failures.append(
+                "确认仍在批量里带 [confirm]（成功后不发新事件，界面会卡在正在提交…）")
+        if "setSubmitting(false)" not in gate_src_now:
+            failures.append("GateBar 没有解除「正在提交…」的兜底（会永远卡住）")
         # ⚠️ 用**测试文件自身位置**推导仓库根，不要用 base_dir：
         #    某些调用路径下 base_dir 指向别处（甚至临时副本），于是 `app_now` 里
         #    根本没有 doResolve，条件块不进入 → 断言静默通过。

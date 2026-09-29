@@ -6,7 +6,7 @@
 // 问了两次，缺陷说明其实已经算出来了（`obs_out.parsed`），只是没接到这里。
 //
 // autoCountdown：auto 闸门模式下的剩余秒数（null=不显示倒计时）；倒计时归零自动继续。
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 export default function GateBar({
   action, reason, count, context, onContinue, onSteer, onAbort, onResolve,
@@ -22,6 +22,13 @@ export default function GateBar({
   // 也看不到自己刚选了什么——而这件事天然要连做几次（真实场景是 4 条）。
   const [picks, setPicks] = useState({})
   const [submitting, setSubmitting] = useState(false)
+
+  // ★ 兜底：闸门上下文一变（后端推来新 gate 事件、或另一个闸门接管），
+  //   立刻解除"正在提交…"。否则一旦某条提交路径拿不到新事件，界面就永远卡住，
+  //   看起来像"没反应"——真实事故里用户点了确认，后端 spec.json 确实写好了，界面却不动。
+  useEffect(() => {
+    setSubmitting(false)
+  }, [reason, action, context])
 
   const label = reason || (action ? `${action.toUpperCase()} 之后` : '需要确认')
   const pct = autoCountdown !== null ? Math.max(0, Math.min(100, (autoCountdown / 30) * 100)) : 0
@@ -139,14 +146,22 @@ export default function GateBar({
               : '确认这份契约，之后「实现」与「验收」都按它执行'}
             onClick={() => {
               setSubmitting(true)
-              // 一次性把全部决定交出去并确认：`C1=a;;C2=b;;[confirm]`
               const body = Object.entries(picks).map(([k, v]) => `${k}=${v}`)
               if (!body.length) {
                 // 没有待定歧义：直接确认
                 onContinue?.()
                 return
               }
-              onResolve?.(null, null, [...body, '[confirm]'].join(';;'))
+              // ★ 两步走，避免"卡在 正在提交…"：
+              //   ① 先**只落盘**决定（不带 [confirm]）——后端会落盘并重开闸门；
+              //   ② 再发 `continue` 真正结束闸门（onContinue 会 dispatch consumed）。
+              //   为什么不能像以前那样一个批量带 `[confirm]` 发出去：那条路成功后
+              //   后端**不再发新 gate 事件**（闸门直接放行、开始实现），而前端此时
+              //   已经 consumed=false、submitting=true —— 于是永远停在"正在提交…"，
+              //   看起来像"没反应"（真实事故：用户点了确认，后端 spec.json 确实写好了
+              //   confirmed:true，但界面卡住不动）。
+              onResolve?.(null, null, body.join(';;'))
+              onContinue?.()
             }}
           >
             <strong>
