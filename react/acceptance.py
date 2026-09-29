@@ -130,7 +130,8 @@ class Evidence:
 
 def load_spec(path: Path, *, require_confirmed: bool = False,
               allow_unresolved: bool = False,
-              allow_irreversible: bool = False) -> tuple[dict, list[Unit]]:
+              allow_irreversible: bool = False,
+              strict_acceptance: bool = False) -> tuple[dict, list[Unit]]:
     """读并校验 requirement-set。返回 (原始 dict, 单元列表)。
 
     校验刻意严格：**判据不完整就必须报出来**（G1），而不是让它在实现阶段被悄悄跳过。
@@ -146,6 +147,10 @@ def load_spec(path: Path, *, require_confirmed: bool = False,
     `allow_irreversible=False`（默认）时，**声明 `irreversible` 的判据一律不执行**。
     验收执行器是真跑命令：`--delete` 会真的删掉用户的文件。确认方式是在 spec 里设
     `irreversible_ok: true`，或显式传 `allow_irreversible=True`。
+
+    `strict_acceptance=True` 时，**判据写错了直接报错**（而不是降级为"无法验收"）。
+    用于校验**模型产出的草稿**：模型把 `kind` 写错若被静默降级成"没判据"，
+    看起来还挺合理，但那是把类型错误伪装成了缺口。人写的 spec 用默认值更宽容。
     """
     p = Path(path)
     if not p.is_file():
@@ -200,6 +205,8 @@ def load_spec(path: Path, *, require_confirmed: bool = False,
                               unverifiable="上游未提供 acceptance"))
             continue
         if not isinstance(acc_raw, dict):
+            if strict_acceptance:
+                raise SpecError(f"{uid} 的 acceptance 应为对象")
             units.append(Unit(id=uid, statement=stmt, artifacts=art_list,
                               unverifiable="acceptance 不是对象"))
             continue
@@ -236,9 +243,14 @@ def load_spec(path: Path, *, require_confirmed: bool = False,
                                       irreversible=bool(acc_raw.get("irreversible",
                                                                     False)))))
         else:
-            units.append(Unit(
-                id=uid, statement=stmt, artifacts=art_list,
-                unverifiable=f"未知 acceptance.kind：{kind!r}（支持 command / predicate）"))
+            # 未知 kind：对于**人手写**的 spec，降级为"无法验收"更安全（不让整次运行
+            # 起不来）；但对于**模型产出的草稿**必须直接拒绝——否则模型写错 kind 会被
+            # 静默降级成"没判据"，看起来还挺合理。这正是 `strict_acceptance` 的用途。
+            msg = f"{uid} 的 acceptance.kind 非法：{kind!r}（支持 command / predicate）"
+            if strict_acceptance:
+                raise SpecError(msg)
+            units.append(Unit(id=uid, statement=stmt, artifacts=art_list,
+                              unverifiable=msg))
 
     # ---- 歧义（clarify）：schema 校验 + 阻塞规则 ----
     raw_clar = data.get("clarify") or []
@@ -497,6 +509,47 @@ def write_draft(draft: dict, work_dir: Path) -> Path:
                 "先移动或删除它，或显式传另一个输出路径")
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(draft, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return p
+
+
+def write_spec_from_agent(raw: str | dict, work_dir: Path) -> Path:
+    """把**模型产出**的 requirement-set 草稿校验后写入规范位置。
+
+    这是"让能力自己产 spec"的落点（设计上的 B 方案）：模型在 THINK/PLAN 阶段识别到
+    没有 spec 时，先把它拟出来，由框架校验并落盘，**再由人确认**——
+    `confirmed` 一律强制为 false：草稿就是草稿，模型不能自己把自己确认掉。
+
+    只做"校验 + 落盘"，不做语义修补：字段缺失/类型不对一律报错让模型改，
+    因为**框架替它补一个判据就等于替需求做决定**。
+    """
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise SpecError(f"草稿不是合法 JSON：{e}") from e
+    else:
+        data = dict(raw)
+    if not isinstance(data, dict):
+        raise SpecError("草稿顶层必须是对象")
+
+    preview = dict(data)
+    preview.setdefault("schema_version", SCHEMA_VERSION)
+    # 强制未确认：模型不许自证需求已获认可
+    preview["confirmed"] = False
+    preview.pop("irreversible_ok", None)   # 项目级危险确认也不能由模型自己开
+
+    # 先校验：用临时文件走一遍 `load_spec`，避免把坏草稿写进规范位置
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        probe = Path(td) / "spec.json"
+        probe.write_text(json.dumps(preview, ensure_ascii=False), encoding="utf-8")
+        load_spec(probe, allow_unresolved=True, allow_irreversible=True,
+                  strict_acceptance=True)
+
+    p = canonical_spec_path(work_dir)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(preview, ensure_ascii=False, indent=2) + "\n",
+                 encoding="utf-8")
     return p
 
 

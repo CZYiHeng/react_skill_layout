@@ -2582,6 +2582,190 @@ def check_gate_evidence(base_dir: Path) -> list[str]:
     return failures
 
 
+def check_requirements_flow(base_dir: Path) -> list[str]:
+    """B 方案：agent 自己产 requirement-set → 停下等人确认 → 确认后放行。
+
+    为什么必须有这条链：整套判据契约（逐条验收、覆盖表、缺口清单、不可逆护栏）
+    都建立在 requirement-set 之上。**没有东西让 agent 去产生它**，
+    契约就永远空转——真实运行里出现过整轮产出工程却从未生成 spec 的情况。
+
+    四条要害：
+      · 模型产出的草稿**强制未确认**（模型不能自己确认自己的需求）；
+      · `irreversible_ok` 也一律丢弃（不能自己批准危险动作）；
+      · 坏草稿**被拒绝且不落盘**（判据类型写错不许被降级成"没判据"）；
+      · 坏掉的 spec **一律拦下并移交**，不许用"继续"替代修好。
+    """
+    import json
+    import tempfile
+
+    from react.acceptance import canonical_spec_path, is_confirmed
+    from react.action import ActionRegistry
+    from react.context import SessionContext
+    from react.loop import ReActLoop
+    from react.model import MockClient
+    from react.render import RichRenderer
+
+    failures: list[str] = []
+    reg = ActionRegistry()
+    reg.load(base_dir / "capabilities" / "coding")
+
+    def mk_loop(wd: Path, gate=None):
+        return ReActLoop(
+            reg, SessionContext(max_rounds=3), MockClient(),
+            RichRenderer(None, show_reasoning=False),
+            gate=gate or (lambda a, r="", c=None: ("continue", None)),
+            # MockClient 靠 `"冒烟回答" in history` 判断"已经问过了"（见 react/model.py）；
+            # 答案不含这四个字，它会一直停在 ASK，六次后 escalated，**根本走不到闸门**。
+            ask=lambda q: "冒烟回答：输入已确认", work_dir=wd, base_dir=base_dir)
+
+    with tempfile.TemporaryDirectory() as td:
+        wd = Path(td)
+        loop = mk_loop(wd)
+        spec = canonical_spec_path(wd)
+
+        # 1) 正常草稿：落盘、强制未确认、irreversible_ok 被丢弃
+        draft = {
+            "goal": "去重工具", "confirmed": True, "irreversible_ok": True,
+            "unit": [
+                {"id": "R1", "statement": "找出重复行",
+                 "acceptance": {"kind": "command", "run": "python -m pytest -q",
+                                "expect": "exit_code == 0"}},
+                {"id": "R3", "statement": "要有 README"},
+            ],
+            "clarify": [{"id": "C1", "question": "文件内还是跨文件？",
+                         "options": ["文件内", "跨文件"], "blocks": ["R1"]}],
+        }
+        msg = loop._handle_submit_requirements(draft)
+        if not spec.is_file():
+            failures.append(f"正常草稿没落盘：{msg[:60]}")
+        else:
+            data = json.loads(spec.read_text(encoding="utf-8"))
+            if data.get("confirmed") is not False:
+                failures.append("模型产出的草稿被标成已确认（模型不能自己确认需求）")
+            if "irreversible_ok" in data:
+                failures.append("模型草稿里的 irreversible_ok 未被丢弃（自批危险动作）")
+        if "尚未确认" not in msg and "未确认" not in msg:
+            failures.append("回执没告诉模型'尚未确认'（它会以为可以开始实现）")
+
+        # 2) 闸门必须被触发，且带上判断依据
+        seen: list[tuple] = []
+        loop2 = mk_loop(
+            wd, gate=lambda a, r="", c=None: (seen.append((a, r, c or {})),
+                                              ("continue", None))[1])
+        loop2._requirements_gate()
+        if not seen or seen[0][0] != "requirements":
+            failures.append("需求确认闸门没被触发（没有契约也能开跑）")
+        else:
+            ctx = seen[0][2]
+            for k in ("spec_path", "spec_exists", "confirmed", "units",
+                      "clarify", "irreversible", "missing_acceptance"):
+                if k not in ctx:
+                    failures.append(f"需求闸门 context 缺 {k}")
+            uids = [u["id"] for u in ctx.get("units") or []]
+            if uids != ["R1", "R3"]:
+                failures.append(f"需求闸门没列出条目：{uids}")
+            no_acc = ctx.get("missing_acceptance") or []
+            if no_acc != ["R3"]:
+                failures.append(f"没标出缺判据的条目：{no_acc}")
+            if [c["id"] for c in ctx.get("clarify") or []] != ["C1"]:
+                failures.append("需求闸门没列出未决歧义")
+
+        # 3) 确认后不再拦（闸门只在确认前出现）
+        from react.acceptance import resolve_clarification
+        resolve_clarification(spec, "C1", "文件内", now="t")
+        loop3 = mk_loop(wd)
+        if loop3._requirements_gate() is not None:
+            failures.append("已确认且无未决歧义时仍被拦")
+
+        # 3b) ★ 端到端：`run()` 必须真的会去调闸门。
+        #     前面直接调 `_requirements_gate()`，**绕过了 `_run_loop` 里的接线**——
+        #     把那段接线删掉，前面的断言全不会变红（这是本断言一开始的盲区）。
+        runwd = Path(td) / "runwd"
+        runwd.mkdir()
+        rspec = canonical_spec_path(runwd)
+        rspec.parent.mkdir(parents=True, exist_ok=True)
+        rspec.write_text(json.dumps({
+            "schema_version": 1, "confirmed": False, "goal": "端到端",
+            "unit": [{"id": "R1", "statement": "s",
+                      "acceptance": {"kind": "command", "run": "true",
+                                     "expect": "exit_code == 0"}}],
+            "clarify": [],
+        }, ensure_ascii=False), encoding="utf-8")
+        hits: list[str] = []
+        rloop = mk_loop(runwd, gate=lambda a, r="", c=None: (hits.append(a),
+                                                            ("continue", None))[1])
+        import contextlib as _cl
+        import io as _io
+        with _cl.redirect_stdout(_io.StringIO()):
+            res = rloop.run("测试任务")
+        if "requirements" not in hits:
+            failures.append(
+                f"run() 没有走到需求契约闸门（hits={hits}）——"
+                "接线断了，没有 spec 也能一路开跑")
+
+        # 3c) 模型不能自己把需求确认掉（`confirmed` 一律被强制 false）
+        #     破坏点不在 loop.py，而在 acceptance.write_spec_from_agent——单独验一遍
+        from react.acceptance import write_spec_from_agent
+        cwd = Path(td) / "selfconfirm"
+        cwd.mkdir()
+        p = write_spec_from_agent({
+            "schema_version": 1, "confirmed": True, "goal": "自证",
+            "unit": [{"id": "R1", "statement": "s"}],
+        }, cwd)
+        if json.loads(p.read_text(encoding="utf-8")).get("confirmed") is not False:
+            failures.append("write_spec_from_agent 让模型把自己确认了")
+
+        # 4) 坏草稿必须被拒且不落盘
+        bad_wd = Path(td) / "bad"
+        bad_wd.mkdir()
+        bloop = mk_loop(bad_wd)
+        bspec = canonical_spec_path(bad_wd)
+        bad_cases = [
+            ("缺 unit", {"goal": "x", "unit": []}),
+            ("id 重复", {"goal": "x", "unit": [{"id": "R1", "statement": "a"},
+                                              {"id": "R1", "statement": "b"}]}),
+            ("blocks 指向不存在需求",
+             {"goal": "x", "unit": [{"id": "R1", "statement": "a"}],
+              "clarify": [{"id": "C1", "question": "q", "blocks": ["R99"]}]}),
+            ("判据 kind 非法",
+             {"goal": "x", "unit": [{"id": "R1", "statement": "a",
+                                     "acceptance": {"kind": "nonsense"}}]}),
+            ("顶层不是对象", "[]"),
+        ]
+        for label, bad in bad_cases:
+            if bspec.is_file():
+                bspec.unlink()
+            out = bloop._handle_submit_requirements(bad)
+            if "被拒绝" not in out and "失败" not in out:
+                failures.append(f"坏草稿未被拒（{label}）：{out[:50]}")
+            if bspec.is_file():
+                failures.append(f"坏草稿落盘了（{label}）")
+
+        # 5) 坏掉的 spec 一律拦下并移交，不许"继续"替代修好
+        broken_wd = Path(td) / "broken"
+        broken_wd.mkdir()
+        bp = canonical_spec_path(broken_wd)
+        bp.parent.mkdir(parents=True, exist_ok=True)
+        bp.write_text("{ 不是 JSON", encoding="utf-8")
+        bloop2 = mk_loop(broken_wd)
+        r1 = bloop2._requirements_gate()
+        r2 = bloop2._requirements_gate()
+        if r1 is None or r2 is None:
+            failures.append("坏掉的 spec 被放行（读不懂的契约不能用「继续」替代修好）")
+        else:
+            # ★ 必须是**移交**并说清为什么，而不是普通的"等确认"拦截：
+            #   否则坏 spec 会被当成"未确认"，第二次就被签成 confirmed 放行。
+            txt = (getattr(r1, "final_text", "") or "") + (getattr(r2, "final_text", "") or "")
+            if "不可用" not in txt or "无法继续" not in txt:
+                failures.append(
+                    f"坏掉的 spec 没有被明确移交（返回的不是'不可用'说明）：{txt[:60]!r}")
+            if getattr(r1, "status", "") != "escalated":
+                failures.append(f"坏 spec 应 escalated，实际 {getattr(r1, 'status', '')!r}")
+        if bp.read_text(encoding="utf-8") != "{ 不是 JSON":
+            failures.append("坏掉的 spec 被改写了")
+    return failures
+
+
 def check_tool_window() -> list[str]:
     """窗口化不得切出孤儿 tool 消息（否则 API 直接 400）。
 

@@ -15,6 +15,52 @@ description: THINK 阶段（代码档案）——分析当前状态与代码意�
 
 不要用纯文字表达决策——框架以工具参数为准；文字仅作补充。
 
+## requirement-set 门禁（第一件要确认的事）
+
+**动手前先看有没有需求契约**：`<work_dir>/.react-agent/spec.json`。
+
+| 情况 | 你必须怎么做 |
+|---|---|
+| **不存在** | 调 `submit_requirements` 把任务拆成**可验收的条目**并提交。框架会校验并落盘，**然后停下等人确认**——确认前不要开始实现 |
+| **存在但 `confirmed` 为 false** | 不要往下走。框架会拦下等人确认；你只需说明"等待确认需求契约" |
+| **存在且已确认** | 按它的 `unit[].id` 与 `acceptance` 推进；它就是本次契约 |
+| **有未决 `clarify`** | 不要自己选一个解读。框架会拦下等人定 |
+| **读不懂（JSON 坏 / schema 不对）** | 不要试图绕过。框架会拦下并移交——请人修好或删掉它 |
+
+## 怎么调 `submit_requirements`
+
+**只做"把需求结构化"，不做语义发明**：
+
+```jsonc
+{
+  "goal": "一句话目标",
+  "unit": [
+    {"id": "R1", "statement": "需求原文，不改写含义",
+     "acceptance": {"kind": "command", "run": "python -m pytest tests/test_core.py -q",
+                    "expect": "exit_code == 0"},
+     "artifacts": ["src/csvdup/core.py"]},
+    {"id": "R2", "statement": "支持 --delete 真删",
+     "acceptance": {"kind": "command", "run": "python -m pytest tests/test_cli.py -q",
+                    "expect": "exit_code == 0", "irreversible": true}},
+    {"id": "R3", "statement": "要有 README"}   // 给不出判据就留空，会标为「无法验收」
+  ],
+  "clarify": [ /* 见下节：多解读时列出来，不要自己选 */ ],
+  "out_of_scope": ["不做 GUI"]
+}
+```
+
+**四条硬规则**：
+
+| 规则 | 说明 |
+|---|---|
+| 判据必须**可执行** | `kind=command` 给 `run` + `expect`；`kind=predicate` 给 `predicate` |
+| **给不出判据就留空** | 省略 `acceptance` 即可，它会被标为「无法验收」并进缺口清单。**绝不许编一个看起来合理的判据**——判据是需求的表达，猜判据等于替需求方做决定 |
+| **会真删数据的判据必须标** `irreversible: true` | 验收执行器是真的跑命令，没标的不可逆命令会被直接执行 |
+| `confirmed` 由人给 | 框架一律强制 `false`。**你不能自己确认自己的需求** |
+
+**框架会拒绝的坏草稿**（会被回执点出来，请按提示改，不要绕过）：
+缺少 `unit`、id 重复或缺失、`acceptance.kind` 非法、`clarify[].blocks` 指向不存在的需求 id。
+
 ## 识别歧义（发现多解读时，不要自己选一个）
 
 需求存在**多种合理解读**时，选一个往下走等于**替需求方做决定**——而且错了没人知道。

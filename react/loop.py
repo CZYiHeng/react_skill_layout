@@ -291,6 +291,78 @@ VERDICT_TOOL: dict = {
     },
 }
 
+#: 需求草稿工具：没有 requirement-set 时，模型用它把需求**结构化成可验收的条目**。
+#: 为什么做成工具而不是让它直接写文件：写文件只有一份自由文本，没有 schema 校验；
+#: 工具参数由框架校验（缺 id / 缺判据 / 类型不对一律拒绝），**坏草稿进不了规范位置**。
+REQUIREMENTS_TOOL: dict = {
+    "type": "function",
+    "function": {
+        "name": "submit_requirements",
+        "description": (
+            "没有需求契约（requirement-set）时，用它把任务拆成可验收的需求条目。"
+            "框架会校验并写入 <work_dir>/.react-agent/spec.json，**然后停下等人确认**"
+            "（confirmed 一律为 false，模型不能自己确认）。"
+            "每条需求必须给可执行的验收判据；给不出判据的条目留空 acceptance，"
+            "它会被标为「无法验收」——**绝不许编一个看起来合理的判据**。"
+            "存在多种合理解读时写进 clarify（带选项），不要自己选一个往下做。"),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "一句话目标"},
+                "unit": {
+                    "type": "array",
+                    "description": "需求条目（至少一条）",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string", "description": "R1 / R2 …（唯一）"},
+                            "statement": {"type": "string", "description": "需求原文，不改写含义"},
+                            "acceptance": {
+                                "type": "object",
+                                "description": "可执行判据；给不出就省略本字段（会标为无法验收）",
+                                "properties": {
+                                    "kind": {"type": "string", "enum": ["command", "predicate"]},
+                                    "run": {"type": "string", "description": "kind=command 时的命令"},
+                                    "expect": {"type": "string",
+                                               "description": "如 `exit_code == 0` 或 `contains 文本`"},
+                                    "predicate": {"type": "object",
+                                                  "description": "kind=predicate 时的谓词对象"},
+                                    "irreversible": {
+                                        "type": "boolean",
+                                        "description": "该判据会真实删除/覆盖数据时置 true（未确认前不会执行）"},
+                                },
+                                "required": ["kind"],
+                            },
+                            "artifacts": {"type": "array", "items": {"type": "string"},
+                                          "description": "期望存在的产物路径"},
+                        },
+                        "required": ["id", "statement"],
+                    },
+                },
+                "clarify": {
+                    "type": "array",
+                    "description": "阻塞型歧义：多种合理解读时列出，不要自己选一个",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string", "description": "C1 / C2 …"},
+                            "question": {"type": "string"},
+                            "why": {"type": "string", "description": "为什么这个歧义重要"},
+                            "options": {"type": "array", "items": {"type": "string"}},
+                            "blocks": {"type": "array", "items": {"type": "string"},
+                                       "description": "卡住哪些需求 id"},
+                        },
+                        "required": ["id", "question"],
+                    },
+                },
+                "out_of_scope": {"type": "array", "items": {"type": "string"},
+                                 "description": "明确不做的"},
+            },
+            "required": ["goal", "unit"],
+        },
+    },
+}
+
 # ---- 文件操作原生工具（对标 Claude Code：Read/Grep/Glob/Write/Edit/Bash） ----
 # ACT 阶段注入给模型，模型直接调用，框架执行并把结果以 role=tool 回写历史。
 # 文本协议 [EXEC: ...] 保留为兜底（kimi 等模型工具调用可能缺失）。
@@ -347,7 +419,7 @@ FILE_TOOLS: list[dict] = [
 # 全阶段统一工具集（缓存友好：tools schema 冻结，任意阶段/轮次逐 token 一致）。
 # 对标 Claude Code：所有工具全程可用，模型靠阶段指令决定调哪个；
 # 控制阶段（THINK/OBSERVE/VERIFY）仍须调用对应的 decide/verdict 工具。
-ALL_TOOLS: list[dict] = [DECIDE_TOOL, VERDICT_TOOL, *FILE_TOOLS]
+ALL_TOOLS: list[dict] = [DECIDE_TOOL, VERDICT_TOOL, REQUIREMENTS_TOOL, *FILE_TOOLS]
 
 # 工具循环防死循环上限（对标 Claude 的自动工具使用，但加护栏）
 _TOOL_LOOP_MAX = 12
@@ -361,6 +433,11 @@ def render_tool_text(action: str, name: str, args: dict | None) -> str:
         return f"[THOUGHT] {head}\n下一步: {args.get('decision', '')}"
     if name == "submit_verdict":
         return f"[{action.upper()}] {args.get('verdict', '')}：{args.get('reason', '')}"
+    if name == "submit_requirements":
+        units = args.get("unit") or []
+        clar = args.get("clarify") or []
+        return (f"[需求草稿] {args.get('goal', '')}\n"
+                f"条目 {len(units)} 条 · 歧义 {len(clar)} 条")
     return f"[TOOL {name}] {json.dumps(args, ensure_ascii=False)}"
 
 
@@ -402,6 +479,8 @@ def _extract_requirements_mentioned(text: str) -> list[str]:
         if rid not in seen:
             seen.append(rid)
     return seen
+
+
 # ask 返回用户回答；返回 None 表示提问被中断（按中止处理）
 Ask = Callable[[str], str | None]
 
@@ -436,6 +515,11 @@ class ReActLoop:
     gate: Gate | None = None          # None = 自动继续（--smoke 场景）
     ask: Ask | None = None            # None = ASK 用占位回答（自动场景）
     executor: Executor | None = None  # ACT 执行器；None = 不执行（纯文本产物）
+    #: 工作目录（= 工具边界）。需求契约（`<work_dir>/.react-agent/spec.json`）在这里找。
+    #: 为 None 时退回 `base_dir`。
+    work_dir: Path | None = None
+    #: 框架根目录（兜底用）
+    base_dir: Path | None = None
     #: 人工闸门档位：auto=仅必须拦时（默认）/ step=每步骤一次 / plan=计划批准一次
     #: / phase=每阶段一次（旧行为，回滚开关）
     gate_mode: str = "auto"
@@ -559,6 +643,15 @@ class ReActLoop:
                 continue
             if decision == "ESCALATE":
                 return LoopResult("escalated", self.context.round_no, think_out.parsed)
+
+            # ★ 需求契约闸门：没有**已确认**的 requirement-set 就不得进入实现。
+            #   放在这里（而不是某一步内部）：它是**运行前置条件**，与档位无关——
+            #   真实运行里出现过整轮产出工程却从未生成 spec 的情况，整套判据契约因此空转。
+            req_gate = self._requirements_gate()
+            if req_gate is not None:
+                return req_gate
+            if self._aborted:
+                return LoopResult("aborted", self.context.round_no, "人工中止")
 
             # phase 档位（旧行为回滚）：THINK 之后也要拦，其余阶段由 _step 内部拦
             if self._is_phase_mode():
@@ -816,8 +909,13 @@ class ReActLoop:
         return self.gate_mode == "phase"
 
     def _needs_human(self, action: str, verdict: str | None = None) -> bool:
-        """「必须拦人」的时刻，与档位无关：终检验收 + OBSERVE 判缺陷/不通过。"""
-        if action == "verify":
+        """「必须拦人」的时刻，与档位无关：需求确认 + 终检验收 + OBSERVE 判缺陷/不通过。
+
+        `requirements` 一档是 B 方案的落点：没有确认过的 requirement-set 就**不得进入实现**
+        （否则整套判据契约形同虚设——真实运行里出现过整轮跑完却没有 spec 的情况）。
+        它与档位无关，因为"需求没确认就开始写码"在任何档位下都不该发生。
+        """
+        if action in ("requirements", "verify"):
             return True
         return action == "observe" and verdict in ("缺陷", "不通过")
 
@@ -847,6 +945,126 @@ class ReActLoop:
             return f"OBSERVE 判定「{verdict}」，需要你指示"
         return "本步骤已完成"
 
+    def _handle_submit_requirements(self, args: dict) -> str:
+        """把模型产出的需求草稿**校验后**写入规范位置。返回给模型的回执。
+
+        这是 B 方案（让能力自己产 spec）的落点。三条硬约束：
+
+        - **校验后才落盘**：坏草稿（缺 id、判据类型不对、blocks 指向不存在的需求）
+          被拒绝并回执说明原因，让模型自己修——框架不替它补判据；
+        - `confirmed` 一律强制 false，`irreversible_ok` 一律丢弃：
+          **模型不能自己把自己的需求确认掉**，也不能自己批准危险动作；
+        - 落盘后由 `_requirements_gate` 停下等人确认，模型拿到的回执里明确写着这一点。
+        """
+        from pathlib import Path as _P
+
+        from react.acceptance import SpecError as _SpecError
+        from react.acceptance import write_spec_from_agent
+
+        wd = self.work_dir or self.base_dir
+        if wd is None:
+            return "（未执行：无法确定工作目录，需求草稿没有落盘）"
+        try:
+            p = write_spec_from_agent(args, _P(wd))
+        except _SpecError as e:
+            return (f"（需求草稿被拒绝，未落盘：{e}）\n"
+                    "请修正后重新调用 submit_requirements——**不要**为了通过而编造判据；"
+                    "给不出可执行判据的条目省略 acceptance 即可（会被标为「无法验收」）。")
+        except Exception as e:  # noqa: BLE001 - 写入失败也要如实回执
+            return f"（需求草稿写入失败：{type(e).__name__}: {e}）"
+        return (f"已写入需求契约草稿：{p}\n"
+                "它**尚未确认**（confirmed=false），本轮运行会停下等人确认；"
+                "在确认之前不要开始实现。")
+
+    def _requirements_gate(self) -> LoopResult | None:
+        """需求契约闸门：没有**已确认**的 requirement-set 时，先拦人（B 方案）。
+
+        为什么放在写码之前、且与档位无关：整套判据契约（逐条验收、覆盖表、缺口清单、
+        不可逆护栏）都建立在 requirement-set 之上。没有它就跑，等于回到"自由发挥"——
+        真实运行里出现过整轮产出工程却从未生成 spec 的情况。
+
+        返回 None 表示可以继续（有已确认的 spec，或人工选择继续时把 spec 标为已确认）。
+        """
+        from pathlib import Path as _P
+
+        from react.acceptance import (canonical_spec_path, clarifications,
+                                      is_confirmed, load_spec)
+        from react.acceptance import SpecError as _SpecError
+
+        wd = self.work_dir or self.base_dir
+        if wd is None:
+            return None
+        spec = canonical_spec_path(_P(wd))
+        data: dict = {}
+        if spec.is_file():
+            try:
+                data, _units = load_spec(spec, allow_unresolved=True,
+                                         allow_irreversible=True)
+            except _SpecError as e:
+                # spec 坏了要拦下来让人修，而不是当成"没有 spec"继续跑
+                data = {"_broken": str(e)}
+        pending = [] if data.get("_broken") else [
+            {"id": c.id, "question": c.question, "why": c.why,
+             "options": c.options, "blocks": c.blocks, "answer": c.answer}
+            for c in clarifications(data) if not c.resolved
+        ]
+
+        if data.get("_broken") is None and spec.is_file() and is_confirmed(data) and not pending:
+            return None   # 已有确认过的契约且无未决歧义 → 放行
+
+        ctx = {
+            "spec_path": str(spec),
+            "spec_exists": spec.is_file(),
+            "broken": data.get("_broken", ""),
+            "confirmed": is_confirmed(data) if spec.is_file() else False,
+            "goal": str(data.get("goal", "") or ""),
+            "units": [
+                {"id": u.get("id"), "statement": u.get("statement"),
+                 "has_acceptance": bool(u.get("acceptance"))}
+                for u in (data.get("unit") or []) if isinstance(u, dict)
+            ],
+            "clarify": pending,
+            "irreversible": [
+                u.get("id") for u in (data.get("unit") or [])
+                if isinstance(u, dict) and isinstance(u.get("acceptance"), dict)
+                and u["acceptance"].get("irreversible")
+            ],
+            "missing_acceptance": [
+                u.get("id") for u in (data.get("unit") or [])
+                if isinstance(u, dict) and not u.get("acceptance")
+            ],
+        }
+        reason = ("还没有已确认的需求契约（requirement-set）" if not spec.is_file()
+                  else "需求契约尚未确认" if not is_confirmed(data)
+                  else "仍有未解决的歧义")
+        cmd, _text = self.gate("requirements", reason, ctx) if self.gate else ("continue", None)
+
+        # ★ 坏掉的 spec **一律不许往下走**：它读不懂，"继续"不能替代修好它。
+        #   此前这里只把它当一次普通拦截，于是第二次就能被签成 confirmed 放行——
+        #   把一份读不懂的契约签了，比不拦更糟。
+        if data.get("_broken"):
+            if cmd == "abort":
+                self._aborted = True
+                return LoopResult("aborted", self.context.round_no, "人工中止")
+            return LoopResult(
+                "escalated", self.context.round_no,
+                f"需求契约不可用，无法继续：{data['_broken']}\n"
+                f"请修好或删除 {spec} 后重试（它读不懂，不能用「继续」替代修好）。")
+
+        if cmd == "abort":
+            self._aborted = True
+            return LoopResult("aborted", self.context.round_no, "人工中止")
+        # 人工确认 → 把 spec 标为已确认，本次运行起按它验收
+        if spec.is_file() and not is_confirmed(data):
+            try:
+                from react.acceptance import confirm_spec
+                confirm_spec(spec)
+                self.context.add_user(
+                    f"人工已确认需求契约（{spec}）——后续实现与验收按它执行。")
+            except Exception as e:  # noqa: BLE001 - 确认失败不该静默
+                return LoopResult("escalated", self.context.round_no,
+                                  f"需求契约确认失败：{e}")
+        return None
     def _check_interrupt(self) -> None:
         """每个阶段边界非阻塞看一眼有没有人工指令——「随时插手」的落点。
 
@@ -953,6 +1171,18 @@ class ReActLoop:
         if resp.tool_calls:
             content = parsed or resp.text or ""
             self.context.add_assistant(text=content, tool_calls=resp.tool_calls)
+            # 框架级工具**先于**执行器工具处理：它们不依赖执行器（没有执行器也要能写需求草稿），
+            # 与 decide_next_step / submit_verdict 同类。
+            for tc in resp.tool_calls:
+                if tc["function"]["name"] != "submit_requirements":
+                    continue
+                try:
+                    args = json.loads(tc["function"]["arguments"] or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                result = self._handle_submit_requirements(args)
+                self.context.add_tool(tc["id"], result)
+                self.render.info(f"↳ 工具 submit_requirements → {result[:300]}")
             if tool_handler is not None:
                 # 原生工具循环：逐个执行真实工具，结果以 role=tool 回写（对标 Claude）
                 # 单个工具执行异常也必须写回执（错误文本），保证 assistant(tool_calls)

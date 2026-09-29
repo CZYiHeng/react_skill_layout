@@ -569,6 +569,9 @@ class ReactService:
             gate=control.as_gate(), ask=ask_fn, executor=executor,
             gate_mode=mode,
             interrupt=control.as_interrupt(), plan_model=plan_model,
+            # 需求契约在 <work_dir>/.react-agent/spec.json —— 必须把工作目录交给 loop，
+            # 否则那个闸门找不到 spec，只能退回 base_dir（错的目录）
+            work_dir=self.work_dir, base_dir=self.base_dir,
         )
         return Runtime(loop=loop, context=context, registry=registry,
                        executor=executor, control=control)
