@@ -2682,6 +2682,11 @@ def check_requirements_flow(base_dir: Path) -> list[str]:
         # 3b) ★ 端到端：`run()` 必须真的会去调闸门。
         #     前面直接调 `_requirements_gate()`，**绕过了 `_run_loop` 里的接线**——
         #     把那段接线删掉，前面的断言全不会变红（这是本断言一开始的盲区）。
+        #
+        #     还要验**优先级**：MockClient 首轮决策就是 ASK，而 ASK 分支会 continue
+        #     回到 THINK。闸门若排在 ASK 之后，就永远够不着——真实运行里 9 次 THINK
+        #     全是模型在问同一件事，auto 档位只回占位答案，6 次后直接 escalated，
+        #     而"把 spec 交给用户确认"这条正确路径一次都没走到。
         runwd = Path(td) / "runwd"
         runwd.mkdir()
         rspec = canonical_spec_path(runwd)
@@ -2704,6 +2709,46 @@ def check_requirements_flow(base_dir: Path) -> list[str]:
             failures.append(
                 f"run() 没有走到需求契约闸门（hits={hits}）——"
                 "接线断了，没有 spec 也能一路开跑")
+        # 闸门必须**优先于 ASK**：把 THINK 强制成 ASK，并让闸门返回 abort，
+        # 于是"闸门先跑"可观察（结果应是 aborted，而不是一路 ASK 到'反复提问'）。
+        # 不能让闸门返回 continue：那样 think 永远 ASK、必然耗尽 _MAX_ASK_TURNS，
+        # 与闸门位置无关，断言就失去区分力（前两版就是这么失效的）。
+        import types as _t2
+        from react.loop import StepOutput as _SO2
+        askwd = Path(td) / "askprec"
+        askwd.mkdir()
+        aspec = canonical_spec_path(askwd)
+        aspec.parent.mkdir(parents=True, exist_ok=True)
+        aspec.write_text(json.dumps({
+            "schema_version": 1, "confirmed": False, "goal": "g",
+            "unit": [{"id": "R1", "statement": "s"}],
+            "clarify": [{"id": "C1", "question": "q",
+                         "options": ["a", "b"], "blocks": ["R1"]}],
+        }, ensure_ascii=False), encoding="utf-8")
+        ask_hits: list[str] = []
+        aloop = mk_loop(askwd, gate=lambda a, r="", c=None: (
+            ask_hits.append(a), ("abort", None))[1])
+        aloop._step = _t2.MethodType(
+            lambda self, name, prompt, **kw: _SO2(
+                action=name, raw="", parsed="[THOUGHT] 先问清楚\n下一步: ASK",
+                elapsed_sec=0.0, tokens=1), aloop)
+        # ⚠️ `_resolve` 是各阶段共用的：只在 think 上返回 ASK
+        _real_resolve = aloop._resolve
+
+        def _resolve_ask_think(self, action_name, out, extract, **kw):
+            if action_name == "think":
+                return "ASK"
+            return _real_resolve(action_name, out, extract, **kw)
+
+        aloop._resolve = _t2.MethodType(_resolve_ask_think, aloop)
+        with _cl.redirect_stdout(_io.StringIO()):
+            ares = aloop.run("测试任务")
+        if not ask_hits or ask_hits[0] != "requirements":
+            failures.append(
+                f"模型选 ASK 时闸门没优先跑（闸门序列={ask_hits[:3]}）——"
+                "闸门会被 ASK 的 continue 永远挡在后面")
+        if "反复提问" in str(getattr(ares, "final_text", "")):
+            failures.append("ASK 被先处理了，模型被占位回答堵成'反复提问'（闸门没拦住）")
 
         # 3c) 模型不能自己把需求确认掉（`confirmed` 一律被强制 false）
         #     破坏点不在 loop.py，而在 acceptance.write_spec_from_agent——单独验一遍

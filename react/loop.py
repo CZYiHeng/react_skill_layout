@@ -631,6 +631,19 @@ class ReActLoop:
             decision = self._resolve("think", think_out, self._decision_extract,
                                      tools=ALL_TOOLS, tool_handler=self.tool_handler)
 
+            # ★ 需求契约闸门：放在**决策分派之前**，优先级高于模型自问。
+            #   为什么必须在前面：模型识别到"spec 未确认 / 有歧义"时会选 ASK，
+            #   而 ASK 分支会 `continue` 回到 THINK——闸门排在它后面就**永远够不着**。
+            #   真实运行：9 次 THINK 全是模型在问同样的事，auto 档位只回占位答案
+            #   「（自动回答：继续）」，6 次后判为"反复提问"直接 escalated，
+            #   而"把 spec 交给用户确认"这条正确路径一次都没走到。
+            #   需求契约是**运行前置条件**，该由人定的问题不该被自动占位回答堵死。
+            req_gate = self._requirements_gate()
+            if req_gate is not None:
+                return req_gate
+            if self._aborted:
+                return LoopResult("aborted", self.context.round_no, "人工中止")
+
             if decision == "ASK":
                 self._ask_count += 1
                 if self._ask_count > _MAX_ASK_TURNS:
@@ -650,12 +663,6 @@ class ReActLoop:
             if decision == "ESCALATE":
                 return LoopResult("escalated", self.context.round_no, think_out.parsed)
 
-            # ★ 需求契约闸门：没有**已确认**的 requirement-set 就不得进入实现。
-            #   放在这里（而不是某一步内部）：它是**运行前置条件**，与档位无关——
-            #   真实运行里出现过整轮产出工程却从未生成 spec 的情况，整套判据契约因此空转。
-            req_gate = self._requirements_gate()
-            if req_gate is not None:
-                return req_gate
             if self._aborted:
                 return LoopResult("aborted", self.context.round_no, "人工中止")
 
