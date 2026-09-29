@@ -1223,46 +1223,42 @@ class ReActLoop:
         if resp.tool_calls:
             content = parsed or resp.text or ""
             self.context.add_assistant(text=content, tool_calls=resp.tool_calls)
-            # 框架级工具**先于**执行器工具处理：它们不依赖执行器（没有执行器也要能写需求草稿），
-            # 与 decide_next_step / submit_verdict 同类。
+            # ★ 分派必须**互斥**：每个 tool_call 恰好写一条回执。
+            #   此前是"先跑框架工具循环、再跑执行器循环"，两个循环都会处理
+            #   `submit_requirements` → 同一个 tool_call_id 写了**两条** tool 消息
+            #   → API 400：`Messages with role 'tool' must be a response to a preceding
+            #   message with 'tool_calls'`。真实运行里就是这么炸的。
+            #   现在按名字分派到唯一去处，结构上不可能重复。
             for tc in resp.tool_calls:
-                if tc["function"]["name"] != "submit_requirements":
-                    continue
+                name = (tc.get("function") or {}).get("name", "")
                 try:
-                    args = json.loads(tc["function"]["arguments"] or "{}")
+                    args = json.loads((tc.get("function") or {}).get("arguments") or "{}")
                 except json.JSONDecodeError:
                     args = {}
-                result = self._handle_submit_requirements(args)
-                self.context.add_tool(tc["id"], result)
-                self.render.info(f"↳ 工具 submit_requirements → {result[:300]}")
-            if tool_handler is not None:
-                # 原生工具循环：逐个执行真实工具，结果以 role=tool 回写（对标 Claude）
-                # 单个工具执行异常也必须写回执（错误文本），保证 assistant(tool_calls)
-                # 的每个 id 都有 tool 回执，否则下次 API 调用报 400。
-                for tc in resp.tool_calls:
-                    name = tc["function"]["name"]
-                    try:
-                        args = json.loads(tc["function"]["arguments"] or "{}")
-                    except json.JSONDecodeError:
-                        args = {}
+                if name == "submit_requirements":
+                    # 框架级工具：不依赖执行器（没有执行器也要能写需求草稿）
+                    result = self._handle_submit_requirements(args)
+                    self.context.add_tool(tc["id"], result)
+                    self.render.info(f"↳ 工具 {name} → {result[:300]}")
+                    continue
+                if tool_handler is not None:
                     try:
                         result = tool_handler(name, args)
                     except Exception as e:  # noqa: BLE001
                         result = f"（工具 {name} 执行异常：{e}）"
                     self.context.add_tool(tc["id"], result)
                     self.render.info(f"↳ 工具 {name} → {result[:300]}")
-                self._tool_loop_pending = True
-            else:
-                # 无 tool_handler：本阶段的工具**不会真正执行**。此前这里写 `content or "ok"`，
-                # 让模型收到一条看起来成功的回执，于是"我以为我读了文件/跑了测试"——
-                # 静默失败，轨迹看起来完全正常。现在显式说明未执行，让模型能据此调整
-                # （要么改用文本结论，要么如实标注"未验证"）。
-                for tc in resp.tool_calls:
+                else:
+                    # 无执行器：本阶段的工具**不会真正执行**。此前这里写 `content or "ok"`，
+                    # 让模型收到一条看起来成功的回执，于是"我以为我读了文件/跑了测试"——
+                    # 静默失败，轨迹看起来完全正常。现在显式说明未执行，让模型能据此调整。
                     self.context.add_tool(
                         tc["id"],
-                        f"（工具 {tc['function']['name']} 未执行："
+                        f"（工具 {name} 未执行："
                         f"该阶段的工具执行未接线或执行器未启用）",
                     )
+            if tool_handler is not None:
+                self._tool_loop_pending = True
         elif resp.tool_name and not resp.text.strip():
             self.context.add_assistant(parsed)
         else:

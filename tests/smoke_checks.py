@@ -2910,6 +2910,60 @@ def check_requirements_flow(base_dir: Path) -> list[str]:
         if _spec_capable(_default):
             failures.append("default 被判成'会产 spec'（它没有任何契约约定）——会又空拦一遍")
 
+        # 11) ★ 每个 tool_call 恰好一条 tool 回执。
+        #     真实事故：`submit_requirements` 的"框架工具循环"与"执行器工具循环"
+        #     **两个循环都跑了**，同一个 tool_call_id 写了**两条** tool 消息 →
+        #     API 400：`Messages with role 'tool' must be a response to a preceding
+        #     message with 'tool_calls'`。整个任务直接 error 结束。
+        import types as _types
+        from react.loop import ALL_TOOLS as _ALL_TOOLS
+        from react.loop import StepOutput as _SO
+        dup_wd = Path(td) / "dupreceipt"
+        dup_wd.mkdir()
+        dctx = _SC2(max_rounds=3)
+        dctx.add_user("写个工具")
+        dloop = ReActLoop(
+            reg, dctx, MockClient(), RichRenderer(None, show_reasoning=False),
+            gate=None, ask=lambda q: "冒烟回答：输入已确认",
+            work_dir=dup_wd, base_dir=base_dir,
+            capability_name="coding", capability_spec_capable=True)
+        # 造一个"同时返回 submit_requirements + 普通文件工具"的响应
+        calls = [
+            {"id": "call_a", "type": "function",
+             "function": {"name": "submit_requirements",
+                          "arguments": json.dumps({
+                              "goal": "g",
+                              "unit": [{"id": "R1", "statement": "s",
+                                        "acceptance": {"kind": "command", "run": "true",
+                                                       "expect": "exit_code == 0"}}],
+                          }, ensure_ascii=False)}},
+            {"id": "call_b", "type": "function",
+             "function": {"name": "read", "arguments": json.dumps({"path": "nope.txt"})}},
+        ]
+        fake = _types.SimpleNamespace(
+            text="", reasoning="", tokens=1, elapsed_sec=0.0, usage=None,
+            tool_calls=calls, tool_name="", tool_args=None)
+        dloop.model = _types.SimpleNamespace(complete=lambda *a, **k: fake)
+
+        def _fake_handler(name, args):
+            return "已执行"
+
+        dloop._step("think", "指令", run_gate=False, tools=_ALL_TOOLS,
+                    tool_handler=_fake_handler)
+        msgs = dctx.messages
+        tool_ids = [m.get("tool_call_id") for m in msgs if m.get("role") == "tool"]
+        if len(tool_ids) != len(set(tool_ids)):
+            failures.append(
+                f"同一个 tool_call_id 写了多条回执（会触发 API 400）：{tool_ids}")
+        for m in msgs:
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                declared = {tc.get("id") for tc in m["tool_calls"]}
+                got = {t for t in tool_ids if t in declared}
+                if got != declared:
+                    failures.append(
+                        f"assistant 声明的 tool_calls 缺回执：{declared - got}")
+        _ = _SO
+
         # 10) default 的 OBSERVE 必须要求核对真实产物
         #     （真实运行病根：只读被截断的正文 → 判不准 → act/observe 空转 32:9）
         obs = (base_dir / "skills" / "observe" / "SKILL.md").read_text(encoding="utf-8")
