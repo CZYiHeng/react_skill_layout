@@ -283,13 +283,17 @@ async def api_events(request: Request) -> StreamingResponse:
 
 
 async def api_control(request: Request) -> JSONResponse:
-    """步进控制：continue / steer / abort。"""
+    """步进控制：continue / steer / abort / pause / resolve。
+
+    `resolve` 是人在需求闸门上直接点了某个歧义选项（text 形如 `C1=文件内`）——
+    不必再手敲 `--resolve` 命令，点一下即落盘成契约。
+    """
     body = await _json_body(request)
     sess = MANAGER.get(str(body.get("session_id", "")))
     if sess is None:
         return JSONResponse({"error": "会话不存在"}, status_code=404)
     cmd = str(body.get("cmd", "continue"))
-    if cmd not in ("continue", "steer", "abort", "pause"):
+    if cmd not in ("continue", "steer", "abort", "pause", "resolve"):
         return JSONResponse({"error": f"未知指令: {cmd}"}, status_code=400)
     sess.control.submit(cmd, body.get("text"))
     return JSONResponse({"ok": True})

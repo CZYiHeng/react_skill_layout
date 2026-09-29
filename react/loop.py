@@ -976,6 +976,11 @@ class ReActLoop:
                 "它**尚未确认**（confirmed=false），本轮运行会停下等人确认；"
                 "在确认之前不要开始实现。")
 
+    def _now(self) -> str:
+        """时间戳（供落盘记录用）。集中一处，便于测试固定时间。"""
+        import time as _t
+        return _t.strftime("%Y-%m-%d %H:%M:%S")
+
     def _requirements_gate(self) -> LoopResult | None:
         """需求契约闸门：没有**已确认**的 requirement-set 时，先拦人（B 方案）。
 
@@ -1037,7 +1042,29 @@ class ReActLoop:
         reason = ("还没有已确认的需求契约（requirement-set）" if not spec.is_file()
                   else "需求契约尚未确认" if not is_confirmed(data)
                   else "仍有未解决的歧义")
-        cmd, _text = self.gate("requirements", reason, ctx) if self.gate else ("continue", None)
+        cmd, text = self.gate("requirements", reason, ctx) if self.gate else ("continue", None)
+
+        # 人在闸门上直接点了某个歧义选项 → 立刻落盘成契约，不用他再手敲
+        # `--resolve`。落盘后重新读一遍，本轮就能带着已决歧义继续。
+        if cmd == "resolve" and text:
+            cid, _, answer = text.partition("=")
+            if cid and answer:
+                try:
+                    from react.acceptance import resolve_clarification
+                    resolve_clarification(spec, cid.strip(), answer.strip(),
+                                          now=self._now())
+                    data, _u = load_spec(spec, allow_unresolved=True,
+                                         allow_irreversible=True)
+                    pending = [{"id": c.id, "question": c.question, "why": c.why,
+                                "options": c.options, "blocks": c.blocks}
+                               for c in clarifications(data) if not c.resolved]
+                    ctx["clarify"] = pending
+                    ctx["confirmed"] = is_confirmed(data)
+                    ctx["resolved_now"] = f"{cid}={answer}"
+                    self.context.add_user(
+                        f"人工已定歧义 {cid}：{answer}（已落盘为契约）。")
+                except Exception as e:  # noqa: BLE001 - 落盘失败要让人看见
+                    self.context.add_user(f"歧义决定落盘失败（{cid}）：{e}")
 
         # ★ 坏掉的 spec **一律不许往下走**：它读不懂，"继续"不能替代修好它。
         #   此前这里只把它当一次普通拦截，于是第二次就能被签成 confirmed 放行——

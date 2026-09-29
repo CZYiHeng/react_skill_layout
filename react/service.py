@@ -197,6 +197,25 @@ class CliControl(ControlChannel):
                   context: dict | None = None) -> tuple[str, str | None]:
         # CLI 也要把**判断依据**显示出来：只提示"需要你指示"等于让人盲选。
         ctx = context or {}
+        units = ctx.get("units") or []
+        if units:
+            no_acc = set(ctx.get("missing_acceptance") or [])
+            irrev = set(ctx.get("irreversible") or [])
+            self._say("[bold]需求契约[/bold] "
+                      f"（{len(units)} 条 · {len(no_acc)} 条无判据"
+                      + (f" · {len(irrev)} 条不可逆" if irrev else "") + "）")
+            for u in units:
+                tag = "❌无判据" if u.get("id") in no_acc else (
+                    "⚠️不可逆" if u.get("id") in irrev else "✅有判据")
+                self._say(f"  {u.get('id')} {tag}  {str(u.get('statement'))[:52]}")
+            if ctx.get("spec_path"):
+                self._say(f"[dim]契约文件：{ctx['spec_path']}[/dim]")
+        for c in ctx.get("clarify") or []:
+            self._say(f"[yellow]待定歧义 {c.get('id')}[/yellow] {c.get('question')}")
+            if c.get("why"):
+                self._say(f"  为什么重要：{c['why']}")
+            for i, opt in enumerate(c.get("options") or [], 1):
+                self._say(f"  [{i}] {opt}")
         defect = str(ctx.get("defect") or "").strip()
         if defect:
             self._say("[bold]缺陷说明[/bold]")
@@ -211,8 +230,11 @@ class CliControl(ControlChannel):
             self._say(f"[dim]涉及需求：{','.join(blocked)}[/dim]")
         if ctx.get("last_steer"):
             self._say(f"[dim]上轮你的纠偏：{ctx['last_steer']}[/dim]")
-        self._say(f"[dim][c]继续 · s <纠偏> · q 中止[/dim]"
-                  + (f"  [dim]— {reason}[/dim]" if reason else ""))
+        hint = "[dim][c]继续 · s <纠偏> · q 中止[/dim]"
+        pending_clar = ctx.get("clarify") or []
+        if pending_clar:
+            hint = ("[dim]r <编号> <选项序号>=定歧义 · c 继续 · s <纠偏> · q 中止[/dim]")
+        self._say(hint + (f"  [dim]— {reason}[/dim]" if reason else ""))
         while True:
             try:
                 ans = input("> ").strip()
@@ -224,6 +246,19 @@ class CliControl(ControlChannel):
                 return (GATE_CONTINUE, None)
             if ans == "q":
                 return (GATE_ABORT, None)
+            if ans.startswith("r ") and pending_clar:
+                # `r 1 2` = 第 1 条歧义选第 2 个选项 → 落盘成契约
+                parts = ans[2:].split()
+                if len(parts) >= 2:
+                    try:
+                        c = pending_clar[int(parts[0]) - 1]
+                        opt = (c.get("options") or [])[int(parts[1]) - 1]
+                        return ("resolve", f"{c.get('id')}={opt}")
+                    except (ValueError, IndexError):
+                        self._say("[dim]格式：r <歧义序号> <选项序号>，如 r 1 2[/dim]")
+                        continue
+                self._say("[dim]格式：r <歧义序号> <选项序号>[/dim]")
+                continue
             if ans.startswith("s ") and len(ans) > 2:
                 return (GATE_STEER, ans[2:].strip())
             if ans == "s" and sug:
@@ -306,6 +341,9 @@ class QueueControl(ControlChannel):
             return (GATE_STEER, text or "")
         if cmd == GATE_ABORT:
             return (GATE_ABORT, None)
+        if cmd == "resolve":
+            # 人在闸门上点了某个歧义选项：透传给 loop，由它落盘成契约
+            return ("resolve", text or "")
         return (GATE_CONTINUE, None)
 
     def wait_answer(self, question: str) -> str | None:

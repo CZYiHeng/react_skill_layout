@@ -2763,6 +2763,54 @@ def check_requirements_flow(base_dir: Path) -> list[str]:
                 failures.append(f"坏 spec 应 escalated，实际 {getattr(r1, 'status', '')!r}")
         if bp.read_text(encoding="utf-8") != "{ 不是 JSON":
             failures.append("坏掉的 spec 被改写了")
+        # 6) 人在闸门上点歧义选项 → 落盘成契约（不必手敲 --resolve）
+        resolve_wd = Path(td) / "resolveui"
+        resolve_wd.mkdir()
+        rp = canonical_spec_path(resolve_wd)
+        rp.parent.mkdir(parents=True, exist_ok=True)
+        rp.write_text(json.dumps({
+            "schema_version": 1, "confirmed": False, "goal": "g",
+            "unit": [{"id": "R1", "statement": "s"}],
+            "clarify": [{"id": "C1", "question": "q",
+                         "options": ["文件内", "跨文件"], "blocks": ["R1"]}],
+        }, ensure_ascii=False), encoding="utf-8")
+        rloop = mk_loop(
+            resolve_wd,
+            gate=lambda a, r="", c=None: ("resolve", "C1=文件内"))
+        rloop._requirements_gate()
+        after = json.loads(rp.read_text(encoding="utf-8"))
+        if (after.get("clarify") or [{}])[0].get("answer") != "文件内":
+            failures.append("闸门上点歧义选项没有落盘成契约")
+
+        # 7) 渲染契约：需求闸门**不能套用缺陷模板**（真实截图上就是这么错的）
+        #    前端靠 `action === 'requirements'` 分流，`ctx.defect` 缺失时缺陷模板整块不渲染。
+        gate_js = (base_dir / "web" / "src" / "components" / "GateBar.jsx")
+        if gate_js.is_file():
+            src = gate_js.read_text(encoding="utf-8")
+            # 不只看标识符存在——必须真的按 action 判定（改成 `= false` 就是套用了缺陷模板）
+            if "const isRequirements = action === 'requirements'" not in src:
+                failures.append(
+                    "GateBar 没有按 action==='requirements' 分流（会套用缺陷模板）")
+            for token in ("missing_acceptance", "irreversible", "clarify",
+                          "onResolve", "确认契约并开始"):
+                if token not in src:
+                    failures.append(f"GateBar 需求分支缺少 {token}")
+            # 需求分支里不应出现缺陷专属文案
+            head = src.split("const isRequirements")[1].split("return (")[0] \
+                if "const isRequirements" in src else ""
+            if "本次无建议修法" in head:
+                failures.append("需求分支里混入了缺陷专属文案（采纳建议）")
+        # 自动倒计时必须对需求闸门关闭：'continue' 在那里等于 confirm_spec（把契约签了）
+        app_js = (base_dir / "web" / "src" / "App.jsx").read_text(encoding="utf-8")
+        if "state.gateAction === 'requirements'" not in app_js:
+            failures.append("需求闸门没有关掉自动倒计时（倒计时会替人签掉契约）")
+        # 后端必须转发 resolve，否则前端点了也没用
+        from react.webapi import api_control  # noqa: F401
+        import inspect as _insp
+        src_web = (base_dir / "react" / "webapi.py").read_text(encoding="utf-8")
+        if '"resolve"' not in src_web:
+            failures.append("api_control 白名单不含 resolve（前端点了会被 400 拒）")
+        _ = _insp
     return failures
 
 

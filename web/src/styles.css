@@ -378,6 +378,32 @@ button { font-family: inherit; }
   background: none; border: none; padding: 0; margin-top: 4px;
   color: #991b1b; font-size: 12px; cursor: pointer; text-decoration: underline;
 }
+/* 需求契约闸门：条目表 + 待定歧义选项（不复用缺陷样式，因为它形状不同） */
+.gatebar-units { display: flex; flex-direction: column; gap: 4px; }
+.unitrow {
+  display: flex; gap: 8px; align-items: baseline;
+  font-size: 12px; padding: 4px 8px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--bg);
+}
+.unitrow-id { font-weight: 700; min-width: 26px; }
+.unitrow-tag { font-size: 11px; min-width: 108px; }
+.unitrow-stmt { flex: 1; }
+.unitrow-ok { border-left: 3px solid #22c55e; }
+.unitrow-ok .unitrow-tag { color: #15803d; }
+.unitrow-missing { border-left: 3px solid #ef4444; background: #fef2f2; }
+.unitrow-missing .unitrow-tag { color: #b91c1c; font-weight: 700; }
+.unitrow-irrev { border-left: 3px solid #f59e0b; background: #fffbeb; }
+.unitrow-irrev .unitrow-tag { color: #b45309; }
+.gatebar-clarify {
+  border: 1px solid #fcd34d; border-left: 3px solid #f59e0b;
+  border-radius: 8px; padding: 8px 10px; background: #fffbeb;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.gatebar-clarify-title { font-size: 12px; font-weight: 700; color: #92400e; }
+.clarifyrow-q { font-size: 12px; color: #78350f; }
+.clarifyrow-why { font-size: 11px; color: #a16207; margin-top: 2px; }
+.clarifyrow-opts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.btn-mini { padding: 3px 10px; font-size: 12px; }
 .gatebar-actions, .askpanel-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .gatebar-actions .steer-input { flex: 1; min-width: 220px; }
 @media (max-width: 640px) {

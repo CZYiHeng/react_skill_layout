@@ -221,9 +221,12 @@ export default function App() {
     [state.sessionId, state.gateMode, state.workDir, state.allowOutside],
   )
 
-  // auto 闸门：gate 弹出后 30s 无操作自动 continue；纠偏输入框聚焦时暂停倒计时
+  // auto 闸门：gate 弹出后 30s 无操作自动 continue；纠偏输入框聚焦时暂停倒计时。
+  // **需求契约闸门例外**：「继续」在那里的语义是 `confirm_spec`（把契约签了），
+  // 让倒计时替你签需求契约，正是"未确认不得进入实现"要防的事。所以它必须手动确认。
   useEffect(() => {
-    if (state.awaiting !== 'gate' || state.gateMode !== 'auto') {
+    if (state.awaiting !== 'gate' || state.gateMode !== 'auto'
+        || state.gateAction === 'requirements') {
       setGateCountdown(null)
       return
     }
@@ -241,7 +244,7 @@ export default function App() {
       })
     }, 1000)
     return () => clearInterval(tick)
-  }, [state.awaiting, state.gateMode, state.sessionId])
+  }, [state.awaiting, state.gateMode, state.sessionId, state.gateAction])
 
   const doContinue = () => {
     api.postControl(state.sessionId, 'continue').catch((e) =>
@@ -250,6 +253,13 @@ export default function App() {
   }
   const doSteer = (text) => {
     api.postControl(state.sessionId, 'steer', text).catch((e) =>
+      dispatch({ type: 'error', message: e.message }))
+    dispatch({ type: 'consumed' })
+  }
+  // 需求闸门：点某个歧义选项 → 立刻落盘成契约（text 形如 `C1=文件内`），
+  // 不必再手敲 `--resolve`
+  const doResolve = (cid, answer) => {
+    api.postControl(state.sessionId, 'resolve', `${cid}=${answer}`).catch((e) =>
       dispatch({ type: 'error', message: e.message }))
     dispatch({ type: 'consumed' })
   }
@@ -528,13 +538,15 @@ export default function App() {
         <footer className={`controls${view === 'chat' ? '' : ' pane-hidden'}`}>
           {state.awaiting === 'gate' ? (
             <GateBar
-              action={state.items.filter((i) => i.kind === 'step').slice(-1)[0]?.action}
+              action={state.gateAction
+                || state.items.filter((i) => i.kind === 'step').slice(-1)[0]?.action}
               reason={state.gateReason}
               context={state.gateContext}
               count={state.gateCount}
               onContinue={doContinue}
               onSteer={doSteer}
               onAbort={doAbort}
+              onResolve={doResolve}
               autoCountdown={gateCountdown}
               onSteerFocus={() => { steerFocusedRef.current = true }}
               onSteerBlur={() => { steerFocusedRef.current = false }}

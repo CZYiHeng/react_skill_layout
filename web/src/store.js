@@ -18,6 +18,7 @@ export const initialState = {
   gateMode: 'auto', // auto=仅必须拦时 | plan=计划批准一次 | step=每步骤拦一次
   gateReason: '', // 本次拦截的原因（后端下发）
   gateContext: null, // 判断依据：{defect, suggestion, attempt, blocked_requirements, last_steer, ...}
+  gateAction: '', // 闸门动作（observe / verify / plan / requirements / interrupt）
   gateCount: 0, // 本次任务被打断次数
   workDir: '', // 工作目录（项目内子目录，空=项目根目录）
   allowOutside: false, // 是否允许 work_dir 指向项目根目录之外（需绝对路径）
@@ -167,6 +168,7 @@ export function reducer(state, action) {
                    // 判断依据：缺陷原文、尝试次数、上轮纠偏、建议修法、涉及需求。
                    // 没有它用户只能看到"需要你指示"——不知道该指示什么。
                    gateContext: e.context || {},
+                   gateAction: e.gateAction || '',
                    gateCount: state.gateCount + 1 }
 
         case 'info':
