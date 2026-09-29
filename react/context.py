@@ -113,6 +113,11 @@ class SessionContext:
     #: 能力声明的技术栈与验收标准（`capabilities/*/capability.json` 的 conventions）。
     #: 由 ReactService 装配时写入；未声明时为空串 → **完全不注入**（行为与从前一致）。
     conventions_block: str = ""
+    #: 工程记忆（跨任务累计的证据链，由 `react/memory.py` 从 requirement-set 与执行回执生成）。
+    #: 由 ReactService 装配时写入；没有记忆时为空串 → **完全不注入**。
+    #: 位置在 conventions 之后、步骤指令之前：它不是 system 的一部分（会随任务更新），
+    #: 放尾部才不会打断前缀缓存。
+    memory_block: str = ""
 
     # ---- 缓存友好的压缩态（前缀只追加，绝不回改已有消息） ----
     #: 摘要当前覆盖的消息下标上界（已摘要的原文不入窗口）。**只增不减**：
@@ -407,10 +412,17 @@ class SessionContext:
         # 它随能力固定、不随步骤变化，放这里与 skill 正文同为"可复用前缀"，
         # 不会因为规范而额外打断缓存；放到步骤指令之后则会跟着步骤一起变。
         conv_block = f"{self.conventions_block}\n\n" if self.conventions_block else ""
+        # 工作记忆（工程记忆/证据链）放在 **conventions 之后、步骤指令之前**：
+        # 与 conventions 同为"跨步骤相对稳定"的内容，且它是**跨任务累计的事实**
+        # （每条需求做到什么程度、上次验证结果），agent 不必每轮重新摸工程。
+        # 它由 react/memory.py 从 requirement-set 与执行回执生成，**不接受模型自由文本**
+        # ——手写的记忆会变成自证，与"完成由证据定义"相冲突。
+        mem_block = f"{self.memory_block}\n\n" if self.memory_block else ""
         stage = (
             f"# 当前阶段：{action.name.upper()}\n\n"
             f"{action.skill_body}\n\n"
             f"{conv_block}"
+            f"{mem_block}"
             f"# 当前步骤指令\n{step_prompt}"
         )
         # 顺序敏感：摘要跨阶段累积、内容会变，必须放在**最后**（离前缀最远）。

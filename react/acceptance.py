@@ -586,4 +586,27 @@ def finalize(data: dict, units: list[Unit], evidence: list[Evidence],
     }
     (out / "verdict.json").write_text(
         json.dumps(verdict, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # 顺带把**证据链**沉淀成跨任务的工程记忆（设计文档 §7 第 4 项）。
+    # 放这里而不是另立命令：覆盖表与记忆是同一份证据的两个视图，分开写容易漂移。
+    # 记忆**由证据生成**，因此不提供任何"模型文字"入口。
+    try:
+        import time as _time
+
+        from react.memory import save_memory, update_from_evidence
+
+        mem = update_from_evidence(
+            out.parent, data, units, evidence,
+            now=_time.strftime("%Y-%m-%d %H:%M:%S"))
+        save_memory(mem, out.parent)
+        verdict["memory"] = str(memory_path_of(out.parent))
+    except Exception as e:  # noqa: BLE001 - 记忆写入失败不影响验收结论本身
+        verdict["memory_error"] = f"{type(e).__name__}: {e}"
+
     return verdict
+
+
+def memory_path_of(work_dir: Path) -> Path:
+    """便捷转发（避免 acceptance 直接依赖 memory 的路径常量）。"""
+    from react.memory import memory_path
+    return memory_path(work_dir)

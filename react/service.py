@@ -410,12 +410,41 @@ class ReactService:
         lines.append("- 可用工具：" + (", ".join(tools) if tools else "（未检测到常见 CLI）"))
         return "\n".join(lines)
 
+    def _resolved_work_dir(self) -> Path | None:
+        """解析工作目录（不建执行器）。越界/不存在时回退项目根并留告警。"""
+        wd, warn = resolve_work_dir(
+            self.base_dir, self.cfg.get("work_dir") or None,
+            allow_outside=bool(self.cfg.get("allow_outside_work_dir", False)),
+        )
+        if warn and not self.work_dir_warning:
+            self.work_dir_warning = warn
+        return wd
+
+    def _memory_block(self, work_dir: Path | None) -> str:
+        """读工程记忆并渲染成注入块；没有记忆时返回空串（**完全不注入**）。
+
+        记忆必须落在工作目录内：`work_dir` 是唯一的工具边界，放到外面 agent 读不到。
+        读取失败不抛——记忆是加速器不是前提；但 `load_memory` 会把"损坏/版本不匹配"
+        作为缺口写进返回的记忆，`render_for_prompt` 会把它显示出来，**不静默失忆**。
+        """
+        from react.memory import load_memory, render_for_prompt
+
+        if work_dir is None or not Path(work_dir).is_dir():
+            return ""
+        try:
+            return render_for_prompt(load_memory(Path(work_dir)))
+        except Exception:  # noqa: BLE001 - 记忆坏了不该让任务起不来
+            return ""
+
     def build_context(self, max_rounds: int | None = None) -> SessionContext:
+        wd = self._resolved_work_dir()
+        self.work_dir = wd or self.base_dir
         return SessionContext(
             max_rounds=int(max_rounds or self.cfg.get("max_rounds", 10)),
             max_context_tokens=int(self.cfg.get("max_context_tokens", 100000)),
             env_info=self._build_env_info(),
             conventions_block=self.capability.conventions_text,
+            memory_block=self._memory_block(wd),
         )
 
     def build_executor(self, allow_exec: bool | None = None,
@@ -496,10 +525,12 @@ class ReactService:
         control = control or AutoControl()
         registry = self.build_registry()
         context = context or self.build_context(max_rounds)
-        # 复用既有上下文时（Web 会话跨任务保持同一 context）也要刷新规范：
-        # 能力可能在两次任务之间换了，而 conventions 是每步 prompt 的一部分。
+        # 复用既有上下文时（Web 会话跨任务保持同一 context）也要刷新规范与记忆：
+        # 能力可能在两次任务之间换了，工作目录也可能变了（记忆跟着工作目录走），
+        # 而两者都是每步 prompt 的一部分。
         context.conventions_block = self.capability.conventions_text
         executor = self.build_executor(allow_exec, work_dir, allow_outside_work_dir)
+        context.memory_block = self._memory_block(self.work_dir)
         if model is not None:
             act_model = model          # 外部指定了单一模型 → 计划阶段回落到它
             plan_model = None

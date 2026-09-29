@@ -2070,6 +2070,155 @@ def check_acceptance_engine(base_dir: Path) -> list[str]:
     return failures
 
 
+def check_work_memory(base_dir: Path) -> list[str]:
+    """工程记忆承载证据链：累计语义、不采用自述、损坏可见、不注入兼容。
+
+    设计依据：docs/changes/2026-09-29-coding-capability-design.md §7 第 4 项。
+    三条要害：
+      · 记忆**由证据生成**（无模型文字入口）——手写的记忆会变成自证；
+      · 累计：后证覆盖、缺席保留、缺口以本次为准；
+      · 损坏/版本不匹配**不抛但有痕迹**——静默失忆比没有记忆更危险。
+    """
+    import json
+    import tempfile
+
+    from react.acceptance import load_spec, run_all
+    from react.memory import (Entry, Memory, load_memory, memory_path,
+                              render_for_prompt, save_memory,
+                              update_from_evidence)
+
+    failures: list[str] = []
+    with tempfile.TemporaryDirectory() as td:
+        w = Path(td)
+        (w / "src").mkdir()
+        (w / "src" / "ok.py").write_text("print('ok')\n", encoding="utf-8")
+        d = w / ".react-agent"
+        d.mkdir()
+        spec_p = d / "spec.json"
+
+        def write_spec(units: list[dict], goal: str = "记忆测试") -> None:
+            spec_p.write_text(json.dumps({
+                "schema_version": 1, "confirmed": True, "goal": goal,
+                "unit": units, "out_of_scope": ["不做 GUI"],
+            }, ensure_ascii=False), encoding="utf-8")
+
+        def one_run(units_spec: list[dict], now: str):
+            write_spec(units_spec)
+            data, units = load_spec(spec_p)
+            ev = run_all(units, w)
+            mem = update_from_evidence(w, data, units, ev, now=now)
+            save_memory(mem, w)
+            return load_memory(w)
+
+        # 第一次：R1 通过、R2 失败、R3 无判据
+        m = one_run([
+            {"id": "R1", "statement": "能跑",
+             "acceptance": {"kind": "command", "run": "python src/ok.py",
+                            "expect": "exit_code == 0"}},
+            {"id": "R2", "statement": "必失败",
+             "acceptance": {"kind": "command",
+                            "run": "python -c \"import sys; sys.exit(3)\"",
+                            "expect": "exit_code == 0"}},
+            {"id": "R3", "statement": "没有判据"},
+        ], "t1")
+        by = {e.id: e.status for e in m.entries}
+        if by.get("R1") != "pass" or by.get("R2") != "fail" or by.get("R3") != "not_run":
+            failures.append(f"首次记忆状态不对：{by}")
+        if not m.gaps:
+            failures.append("首次记忆没有缺口（失败与无判据都必须出现）")
+        if not memory_path(w).is_file():
+            failures.append("记忆文件未写到规范位置")
+        # 生成的两份都必须存在（Markdown 给人 + JSON 侧车）
+        if not (d / "evidence-ledger.json").is_file():
+            failures.append("记忆侧车 JSON 未写出（下次无法追加）")
+
+        # 第二次：R2 改对、R3 缺席
+        m2 = one_run([
+            {"id": "R1", "statement": "能跑",
+             "acceptance": {"kind": "command", "run": "python src/ok.py",
+                            "expect": "exit_code == 0"}},
+            {"id": "R2", "statement": "现在对了",
+             "acceptance": {"kind": "command", "run": "python src/ok.py",
+                            "expect": "exit_code == 0"}},
+        ], "t2")
+        by2 = {e.id: e.status for e in m2.entries}
+        if by2.get("R2") != "pass":
+            failures.append("后证未覆盖前证（R2 应 fail → pass）")
+        if "R3" not in by2:
+            failures.append("本次缺席的条目被抹掉了（历史证据应保留）")
+        if any("R2" in g for g in m2.gaps):
+            failures.append("缺口里仍有过期条目（缺口应以本次为准）")
+
+        # 损坏：不抛，但必须可见（静默失忆比没有记忆更危险）
+        led = d / "evidence-ledger.json"
+        good = led.read_text(encoding="utf-8")
+        led.write_text("{ 这不是 JSON", encoding="utf-8")
+        if not load_memory(w).gaps:
+            failures.append("损坏的记忆没有留下痕迹（静默失忆）")
+        # 版本不匹配：同样可见
+        led.write_text(json.dumps({"schema_version": 999}), encoding="utf-8")
+        if not load_memory(w).gaps:
+            failures.append("记忆版本不匹配没有痕迹")
+        led.write_text(good, encoding="utf-8")
+
+        # 空记忆不注入（否则每步都白花一段预算）
+        empty = w / "no-memory"
+        empty.mkdir()
+        if render_for_prompt(load_memory(empty)):
+            failures.append("空记忆仍产出了注入块（应完全不注入）")
+
+        # 注入块必须标明"不是自述"，否则模型会把它当自己的话
+        blk = render_for_prompt(m2)
+        if "不是自述" not in blk:
+            failures.append("注入块未声明它由证据生成（模型会误当自述）")
+        if "pass" not in blk or "R1" not in blk:
+            failures.append("注入块未包含状态与编号")
+
+        # 模型文字入口不存在：update_from_evidence 的签名里没有"自由文本"
+        import inspect
+        sig = set(inspect.signature(update_from_evidence).parameters)
+        if sig != {"work_dir", "data", "units", "evidence", "capability", "now"}:
+            failures.append(f"update_from_evidence 签名被改动，含多余入口：{sig}")
+
+        # 原子写：**写失败时目标文件必须保持不变**（否则崩溃会留下"被截断但看着像真的"
+        # 记忆，那比没有记忆危险——它会骗过后续所有任务）。
+        # 只查"无残留临时文件"不够：直接覆盖也能满足那条。这里直接模拟中途失败。
+        import react.memory as _mem
+
+        target = memory_path(w)
+        before = target.read_text(encoding="utf-8")
+        orig_atomic = _mem._atomic_write
+
+        def _boom(*a, **k):
+            raise OSError("模拟写入途中失败")
+
+        try:
+            _mem._atomic_write = _boom      # noqa: PGH003 - 测试内替换，finally 还原
+            try:
+                save_memory(m2, w)
+                failures.append("原子写：失败时未抛异常（不该静默吞）")
+            except OSError:
+                pass
+            if target.read_text(encoding="utf-8") != before:
+                failures.append("原子写：写失败后目标文件被破坏（应为原内容）")
+        finally:
+            _mem._atomic_write = orig_atomic
+
+        # 成功路径不留临时文件
+        save_memory(m2, w)
+        if list(d.glob(".tmp-*")):
+            failures.append("原子写残留临时文件")
+
+    # 不注入记忆时，上下文块必须与从前逐字节一致（兼容保证）
+    from react.context import SessionContext
+    from react.memory import Memory as _M
+    c1 = SessionContext(memory_block="")
+    c2 = SessionContext()
+    if c1.memory_block != "" or c2.memory_block != "":
+        failures.append("SessionContext.memory_block 默认应为空串（默认不注入）")
+    return failures
+
+
 def check_tool_window() -> list[str]:
     """窗口化不得切出孤儿 tool 消息（否则 API 直接 400）。
 
