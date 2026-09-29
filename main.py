@@ -18,12 +18,13 @@ for _stream in (sys.stdout, sys.stderr, sys.stdin):
 
 from rich.console import Console
 
+from react.acceptance import SpecError, finalize, run_spec
 from react.action import ACTION_NAMES, DEFAULT_VARIANT, ActionRegistry
 from react.capability import CAPABILITIES_DIR
 from react.config import (ConfigError, active_provider_name, load_config as load_config_module,
                           resolve_config_path, resolve_provider)
 from react.render import RichRenderer
-from react.service import CliControl, ReactService
+from react.service import CliControl, ReactService, resolve_work_dir
 from tests.run_all import run_smoke
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -310,6 +311,51 @@ def cmd_new_capability(name: str, console: Console, base_dir: Path = BASE_DIR,
                   "只改与该能力领域相关的段落）[/dim]")
 
 
+def cmd_verify(spec: Path, work_dir: Path | None, out_dir: Path | None,
+               console: Console) -> int:
+    """`--verify`：按 requirement-set 逐条执行验收判据，产出覆盖表与缺口清单。
+
+    这是"完成判据是系统概念"的落地入口——**不调用模型**，判据由上游「需求」能力提供。
+    退出码：0=全部通过；1=有失败/无法验收/执行异常。
+    工作目录默认取配置里的 `work_dir`，且沿用同一套边界（越界由执行器拒绝）。
+    """
+    if work_dir is None:
+        try:
+            cfg = load_config(_config_path(), console, quiet=True)
+        except ConfigError as e:
+            console.print(f"[red]✘ 配置不可用：{e}[/red]")
+            return 1
+        work_dir = resolve_work_dir(
+            Path(__file__).resolve().parent, cfg.get("work_dir") or None,
+            allow_outside=bool(cfg.get("allow_outside_work_dir", False)),
+        )[0]
+    resolved = Path(work_dir).resolve()
+    out = Path(out_dir) if out_dir else resolved / ".react-agent"
+
+    try:
+        data, units, evidence = run_spec(spec, resolved)
+    except SpecError as e:
+        # spec 不合法是**配置错误**，不是"验收失败"——分开报，别让用户以为是代码的问题
+        console.print(f"[red]✘ requirement-set 不合法：{e}[/red]")
+        return 1
+
+    verdict = finalize(data, units, evidence, out)
+    for e in evidence:
+        mark = {"pass": "[green]✅[/green]", "fail": "[red]❌[/red]",
+                "not_run": "[yellow]⚠️[/yellow]", "error": "[red]💥[/red]"}.get(e.status, "?")
+        console.print(f"  {mark} {e.unit_id}  [dim]{e.summary()}[/dim]")
+    console.print()
+    if verdict["all_passed"]:
+        console.print(f"[green]✔ 全部通过[/green] · {verdict['passed']}/{verdict['units_total']}"
+                      f" 条 · 产物：{out}")
+        return 0
+    console.print(f"[red]✘ 未完成[/red] · {verdict['passed']}/{verdict['units_total']} 条通过"
+                  f" · 缺口 {len(verdict['gaps'])} 项 · 产物：{out}")
+    for g in verdict["gaps"]:
+        console.print(f"  [yellow]-[/yellow] {g}")
+    return 1
+
+
 def cmd_check(console: Console, skills_dir: Path | None) -> None:
     """`--check`：只校验配置并打印生效接入与当前 skill 绑定，不启动循环。
 
@@ -361,6 +407,13 @@ def main() -> None:
                         help="从 ~/.claude/skills 绑定 skill 到动作槽位，如 --bind plan dev-flow")
     parser.add_argument("--check", action="store_true",
                         help="只校验配置并打印生效接入（0=可用 / 1=不可用），不启动循环")
+    parser.add_argument("--verify", metavar="SPEC.json",
+                        help="按 requirement-set 逐条执行验收判据，产出覆盖表与缺口清单"
+                             "（0=全部通过 / 1=有失败或无法验收）。不调用模型")
+    parser.add_argument("--verify-dir", type=Path, default=None,
+                        help="--verify 的工作目录（默认取配置里的 work_dir）")
+    parser.add_argument("--verify-out", type=Path, default=None,
+                        help="--verify 的产物目录（默认 <工作目录>/.react-agent/）")
     parser.add_argument("--smoke", action="store_true", help="冒烟测试（Mock 模型，零 API 消耗）")
     parser.add_argument("--smoke-live", action="store_true", help="冒烟测试（真实 kimi API）")
     parser.add_argument("--new-capability", metavar="名字",
@@ -391,6 +444,8 @@ def main() -> None:
         cmd_bind(args.bind[0], args.bind[1], skills_dir, console)
     elif args.check:
         cmd_check(console, skills_dir)
+    elif args.verify:
+        sys.exit(cmd_verify(Path(args.verify), args.verify_dir, args.verify_out, console))
     elif args.smoke:
         cmd_smoke(live=False, skills_dir=skills_dir, console=console)
     elif args.smoke_live:

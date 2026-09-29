@@ -1819,6 +1819,151 @@ def check_capability_exposure(base_dir: Path) -> list[str]:
     return failures
 
 
+def check_acceptance_engine(base_dir: Path) -> list[str]:
+    """验收执行器：把"完成"变成系统的事实（对应设计文档 §6 的 A1–A6）。
+
+    这组断言的**重点在负向**：顺利通过时谁都对，只有"失败/无法验收时是否可见"
+    才决定产品可信（设计文档 §6 的原话）。
+    """
+    import json
+    import tempfile
+
+    from react.acceptance import (STATUS_ERROR, STATUS_FAIL, STATUS_NOT_RUN,
+                                  STATUS_PASS, Evidence, SpecError, Unit,
+                                  all_passed, build_gaps, load_spec,
+                                  render_report, run_spec)
+
+    failures: list[str] = []
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        (tmp / "ok.py").write_text("print('ok')\n", encoding="utf-8")
+
+        def write_spec(spec: dict, name: str = "spec.json") -> Path:
+            p = tmp / name
+            p.write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
+            return p
+
+        def spec_of(units: list[dict]) -> dict:
+            return {"schema_version": 1, "goal": "测试", "unit": units}
+
+        # A1 判据完整 → 全绿；覆盖表/回执/缺口都产出
+        p = write_spec(spec_of([
+            {"id": "R1", "statement": "能跑",
+             "acceptance": {"kind": "command", "run": "python ok.py",
+                            "expect": "exit_code == 0"}},
+            {"id": "R2", "statement": "产物在",
+             "acceptance": {"kind": "predicate",
+                            "predicate": {"kind": "file_exists", "path": "ok.py"}}},
+        ]), "a1.json")
+        data, units, ev = run_spec(p, tmp)
+        if not all_passed(units, ev):
+            failures.append(f"A1 全绿用例未通过：{[e.status for e in ev]}")
+        rep = render_report(data, units, ev)
+        for must in ("| 需求 | 状态 | 证据 |", "R1", "R2", "## 缺口清单", "- 无"):
+            if must not in rep:
+                failures.append(f"A1 覆盖表缺少 {must!r}")
+
+        # A3 故意让一条失败 → 必须 ❌ 且不得声称完成（这是最关键的一条）
+        p = write_spec(spec_of([
+            {"id": "R1", "statement": "能跑",
+             "acceptance": {"kind": "command", "run": "python ok.py",
+                            "expect": "exit_code == 0"}},
+            {"id": "R2", "statement": "必失败",
+             "acceptance": {"kind": "command", "run": "python -c \"import sys; sys.exit(3)\"",
+                            "expect": "exit_code == 0"}},
+        ]), "a3.json")
+        data, units, ev = run_spec(p, tmp)
+        if all_passed(units, ev):
+            failures.append("A3 有失败项时 all_passed 仍为真（完成判据失效）")
+        rep = render_report(data, units, ev)
+        if "❌ fail" not in rep:
+            failures.append("A3 失败项未在覆盖表显示 ❌")
+        if "结论：完成" in rep:
+            failures.append("A3 有失败项却声称「完成」")
+        if "R2：" not in rep:
+            failures.append("A3 失败项未进缺口清单")
+
+        # A4 含散文判据（只有 statement）→ 必须 not_run 并报缺口，不得静默跳过
+        p = write_spec(spec_of([
+            {"id": "R1", "statement": "上游只给了这句话，没给判据"},
+        ]), "a4.json")
+        data, units, ev = run_spec(p, tmp)
+        if ev[0].status != STATUS_NOT_RUN:
+            failures.append(f"A4 无判据的条目状态应为 not_run，实际 {ev[0].status}")
+        if all_passed(units, ev):
+            failures.append("A4 无判据竟算通过（「没验」被当成「验过了」）")
+        if not build_gaps(units, ev):
+            failures.append("A4 无判据未进缺口清单")
+        # 判据残缺（有 kind=command 但缺 expect）同样必须 not_run
+        p = write_spec(spec_of([
+            {"id": "R1", "statement": "缺 expect",
+             "acceptance": {"kind": "command", "run": "python ok.py"}},
+        ]), "a4b.json")
+        _, units, ev = run_spec(p, tmp)
+        if ev[0].status != STATUS_NOT_RUN:
+            failures.append(f"A4b 缺 expect 应 not_run，实际 {ev[0].status}")
+
+        # 各类状态可区分：命令不存在 → error（不是 fail）
+        p = write_spec(spec_of([
+            {"id": "R1", "statement": "命令不存在",
+             "acceptance": {"kind": "command", "run": "no-such-cmd-xyz",
+                            "expect": "exit_code == 0"}},
+        ]), "err.json")
+        _, units, ev = run_spec(p, tmp)
+        if ev[0].status != STATUS_ERROR:
+            failures.append(
+                f"命令不存在应为 error（判据跑不起来），实际 {ev[0].status}")
+
+        # A6 覆盖表完全由证据推导：函数签名里没有任何"模型文字"入口
+        import inspect
+        sig = inspect.signature(render_report)
+        if set(sig.parameters) != {"data", "units", "evidence"}:
+            failures.append(
+                f"A6 render_report 只应接受 data/units/evidence，实际 {list(sig.parameters)}")
+        # 回执与表必须一致：把证据换掉，表也要跟着变（证明表不是独立文本）
+        rep2 = render_report(data, units, [ev[0]])
+        if "R1" not in rep2:
+            failures.append("A6 覆盖表未随证据变化")
+
+        # ★ 缺失回执 ≠ 通过：靠"证据数量等于单元数量"是脆弱前提——
+        #   漏执行一条同时少一条回执，数量照样相等，漏掉的那条就会被算成通过。
+        two_units = [Unit(id="R1", statement="x"), Unit(id="R2", statement="y")]
+        if all_passed(two_units, [Evidence("R1", STATUS_PASS)]):
+            failures.append("缺回执的单元被算成通过（完成判据只比数量，太脆弱）")
+        if all_passed(two_units, [Evidence("R1", STATUS_PASS), Evidence("R9", STATUS_PASS)]):
+            failures.append("回执 id 与需求 id 不匹配却被算成通过")
+        if all_passed([], []):
+            failures.append("零需求竟算完成")
+        # not_run 单条也不得通过
+        if all_passed([Unit(id="R1", statement="x")],
+                      [Evidence("R1", STATUS_NOT_RUN)]):
+            failures.append("not_run 被算成通过（「没验」被当成「验过了」）")
+
+        # schema 校验：错误必须明确报出（配置错误 ≠ 验收失败）
+        bad_cases = [
+            ({"unit": []}, "缺 unit"),
+            ({"schema_version": 99, "unit": [{"id": "R1", "statement": "x"}]}, "版本不匹配"),
+            ({"schema_version": 1, "unit": [{"id": "R1", "statement": ""}]}, "空 statement"),
+            ({"schema_version": 1, "unit": [{"id": "R1", "statement": "x"},
+                                            {"id": "R1", "statement": "y"}]}, "id 重复"),
+        ]
+        for spec, why in bad_cases:
+            p = write_spec(spec, "bad.json")
+            try:
+                load_spec(p)
+                failures.append(f"非法 spec 未报错（{why}）")
+            except SpecError:
+                pass
+        p = tmp / "not-json.json"
+        p.write_text("{ not json", encoding="utf-8")
+        try:
+            load_spec(p)
+            failures.append("非 JSON 的 spec 未报错")
+        except SpecError:
+            pass
+    return failures
+
+
 def check_tool_window() -> list[str]:
     """窗口化不得切出孤儿 tool 消息（否则 API 直接 400）。
 
