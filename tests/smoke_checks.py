@@ -1681,6 +1681,98 @@ def check_work_dir(base_dir: Path) -> list[str]:
     return failures
 
 
+def check_executor_boundary(base_dir: Path) -> list[str]:
+    """工具边界恒等于 work_dir（+ 白名单）——修一个真 bug 的回归保护。
+
+    真实事故：`allow_outside_work_dir=True` 曾被兼作"放行任意绝对路径"，于是
+    用户设了 `work_dir=G:\\one`，agent 仍能用绝对路径把文件写到 `G:\\three`
+    （用户诉求其实只是"能在 react-agent 之外的文件夹建工程"）。
+
+    现在：
+      · 边界 = cwd（= 解析后的 work_dir）+ `extra_roots` 白名单，**没有关闭分支**；
+      · `allow_outside` 只管"work_dir 能否落在项目外"，不再影响文件读写边界。
+    """
+    import tempfile
+
+    from react.executor import LocalExecutor
+
+    failures: list[str] = []
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        work = root / "work"
+        other = root / "other"
+        work.mkdir()
+        other.mkdir()
+        inside = work / "a.txt"
+        outside = other / "b.txt"
+
+        def try_write(ex, target: Path) -> bool:
+            ex.run_tool("write", {"path": str(target), "content": "x"})
+            ok = target.is_file()
+            if ok:
+                target.unlink()
+            return ok
+
+        # 1) 无白名单：work_dir 内放行、外拒绝（这是本次修的核心）
+        ex = LocalExecutor(cwd=work, allow_file_write=True)
+        if not try_write(ex, inside):
+            failures.append("work_dir 内的写入被误拒")
+        if try_write(ex, outside):
+            failures.append(
+                "work_dir 之外的绝对路径写入未被拒绝（边界失效——本次修的 bug）")
+
+        # 2) 显式白名单才放行
+        ex2 = LocalExecutor(cwd=work, allow_file_write=True, extra_roots=(other,))
+        if not try_write(ex2, outside):
+            failures.append("extra_roots 白名单内的写入被误拒")
+        if try_write(ex2, work.parent / "not_listed.txt"):
+            failures.append("白名单外的目录写入未被拒绝")
+
+        # 3) 白名单含不存在目录 → 该目录仍被拒（不静默放行）
+        ex3 = LocalExecutor(cwd=work, allow_file_write=True,
+                            extra_roots=(root / "nope",))
+        if try_write(ex3, outside):
+            failures.append("白名单里的不存在目录不应放行其同名区域")
+
+        # 4) 读操作同样受边界约束（读和写共用同一次解析）
+        got = ex.run_tool("read", {"path": str(outside)})
+        if "已拒绝" not in got:
+            failures.append(f"读 work_dir 之外未被拒绝：{got[:40]}")
+
+        # 5) 执行器不再有 allow_outside 这个口子（防止它被重新引入）
+        import inspect
+        sig = inspect.signature(LocalExecutor.__init__)
+        if "allow_outside" in sig.parameters:
+            failures.append(
+                "LocalExecutor 又出现了 allow_outside 参数——它会把边界整个关掉")
+
+    # 6) service 层：allow_outside 只影响 work_dir 位置，不再传给执行器
+    from react.config import DEFAULTS
+    from react.service import ReactService
+
+    with tempfile.TemporaryDirectory() as td:
+        sandbox = Path(td)
+        cfg = dict(DEFAULTS, work_dir=str(sandbox), allow_outside_work_dir=True,
+                   enable_file_write=True)
+        svc = ReactService(cfg, base_dir)
+        ex = svc.build_executor()
+        if not isinstance(ex.extra_roots, tuple):
+            failures.append("执行器的 extra_roots 应为 tuple")
+        # 白名单来自配置
+        listed = sandbox / "listed"
+        listed.mkdir()
+        svc2 = ReactService(dict(cfg, extra_roots=[str(listed)]), base_dir)
+        ex2 = svc2.build_executor()
+        if listed.resolve() not in [Path(p) for p in ex2.extra_roots]:
+            failures.append(f"extra_roots 配置未传到执行器：{ex2.extra_roots}")
+        # 不存在的白名单项 → 告警而非静默
+        svc3 = ReactService(dict(cfg, extra_roots=[str(sandbox / "nope")]), base_dir)
+        svc3.build_executor()
+        if not svc3.work_dir_warning:
+            failures.append("extra_roots 含不存在目录时未告警")
+    return failures
+
+
 def check_tool_window() -> list[str]:
     """窗口化不得切出孤儿 tool 消息（否则 API 直接 400）。
 

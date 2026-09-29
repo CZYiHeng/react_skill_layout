@@ -109,6 +109,7 @@ def run_smoke(live: bool, skills_dir: Path, base_dir: Path,
     failures += C.check_gate_mode()
     failures += C.check_interrupt()
     failures += C.check_work_dir(base_dir)
+    failures += C.check_executor_boundary(base_dir)
     failures += C.check_native_tools(base_dir)
     failures += C.check_token_stats(base_dir)
     return failures, None

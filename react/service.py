@@ -312,9 +312,11 @@ def resolve_work_dir(base_dir: Path, raw: str | Path | None,
                      allow_outside: bool = False) -> tuple[Path, str | None]:
     """解析工作目录（写盘 / 执行命令的根）。
 
-    默认安全边界：只允许项目根目录内的子目录（`allow_outside=False`）。
-    `allow_outside=True` 时放行**绝对路径**指向的项目外目录——这是显式授权，
-    不走这个开关的绝对路径一律回退。目录不存在时同样回退，绝不代为创建。
+    `allow_outside=True` 只表示**允许 `work_dir` 本身落在项目外**（例如在 `G:\\one`
+    建工程）——这是"能在别处干活"的授权，不再顺带关掉工具边界。
+    越界由 `LocalExecutor` 负责：边界恒等于这里解析出的 `work_dir`（+ `extra_roots`）。
+
+    目录不存在时回退为项目根目录，绝不代为创建。
     """
     base = Path(base_dir).resolve()
     if not raw:
@@ -327,7 +329,7 @@ def resolve_work_dir(base_dir: Path, raw: str | Path | None,
             target.relative_to(base)
         except ValueError:
             return base, (f"工作目录 {target} 越出项目根目录 {base}，已回退为项目根目录"
-                          "（如需指向项目外，请显式开启 allow_outside_work_dir）")
+                          "（如需指向项目外，请显式开启「在项目外使用工作目录」）")
     if not target.is_dir():
         return base, f"工作目录 {target} 不存在，已回退为项目根目录"
     return target, None
@@ -421,7 +423,9 @@ class ReactService:
                        allow_outside: bool | None = None) -> LocalExecutor:
         """allow_exec 为 None 时按配置开关；为 True/False 时强制覆盖（MCP 侧按需开）。
 
-        work_dir / allow_outside 为 None 时取配置；两者都可按任务覆盖（Web 端下发）。
+        - `allow_outside` 只控制**`work_dir` 能否落在项目外**（"能在别处建工程"的授权），
+          **不再关掉工具边界**：边界恒等于解析出的 `work_dir` + `extra_roots` 白名单。
+        - `work_dir` / `allow_outside` 为 None 时取配置；两者都可按任务覆盖（Web 端下发）。
         """
         if allow_exec is None:
             shell = bool(self.cfg.get("enable_shell_exec", False))
@@ -435,16 +439,46 @@ class ReactService:
         self.work_dir, self.work_dir_warning = resolve_work_dir(
             self.base_dir, work_dir, allow_outside=bool(allow_outside),
         )
+        extra, extra_warn = self._extra_roots()
+        # work_dir 的告警（越界/不存在）优先于白名单的告警：前者更可能是用户真正想知道的
+        if self.work_dir_warning is None:
+            self.work_dir_warning = extra_warn
         return LocalExecutor(
             cwd=self.work_dir,
             allow_shell=shell,
             allow_file_write=write,
-            allow_outside=bool(allow_outside),
+            extra_roots=extra,
             timeout_sec=int(self.cfg.get("exec_timeout_sec", 30)),
             sandbox=bool(self.cfg.get("sandbox_shell", False)),
             low_integrity=bool(self.cfg.get("sandbox_integrity_low", False)),
             shell_backend=str(self.cfg.get("shell_backend", "cmd")),
         )
+
+    def _extra_roots(self) -> tuple[tuple[Path, ...], str | None]:
+        """`extra_roots` 白名单：除 work_dir 外额外允许访问的根目录。
+
+        非字符串项 / 不存在的目录一律跳过并返回告警——白名单写错不该让任务起不来，
+        但也不能静默生效（否则用户以为放行了其实没有）。
+        """
+        raw = self.cfg.get("extra_roots") or []
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, (list, tuple)):
+            return (), f"extra_roots 应为数组，实际 {type(raw).__name__}，已忽略"
+        out: list[Path] = []
+        warn: str | None = None
+        for item in raw:
+            if not isinstance(item, str) or not item.strip():
+                warn = f"extra_roots 含非字符串项 {item!r}，已忽略"
+                continue
+            p = Path(item)
+            if not p.is_absolute():
+                p = self.base_dir / p
+            if not p.is_dir():
+                warn = f"extra_roots 里的目录不存在：{p}，已忽略"
+                continue
+            out.append(p.resolve())
+        return tuple(out), warn
 
     def _active_profile(self) -> dict:
         """生效 provider（含 model / timeout_sec）。

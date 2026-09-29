@@ -6,7 +6,8 @@
 
 设计原则（安全默认）：
 - **默认关闭**：enable_shell_exec / enable_file_write 均为 False 时一律拒绝，不越权。
-- **工作目录受限**：文件读写/搜索必须落在 cwd 之内，越界拒绝（allow_outside 时放行绝对路径）。
+- **工作目录受限**：文件读写/搜索必须落在 cwd 之内，越界拒绝。
+  想访问 cwd 之外，用显式白名单 `extra_roots`（没有"关闭边界"的开关）。
 - **超时兜底**：shell 执行有超时，避免挂死。
 - **read 默认行数上限**（对齐 Claude Code）：默认 2000 行 + 单行截断 2000 字符，超限提示翻页。
 - 执行回显交回 OBSERVE 作为观察对象，ACT 仍是"产出意图"，执行由框架代劳。
@@ -48,7 +49,12 @@ class LocalExecutor:
     cwd: Path
     allow_shell: bool = False
     allow_file_write: bool = False
-    allow_outside: bool = False
+    #: 除 cwd 之外**额外允许**访问的根目录（显式白名单）。
+    #: 注意这里没有"关掉边界"的开关：工具边界**恒等于 cwd（= 当前 work_dir）+ 本白名单**。
+    #: 曾经有个 `allow_outside` 布尔值用来"允许项目外绝对路径"，它顺带把越界检查整个跳过，
+    #: 于是设了 `work_dir=G:\one` 也会被绝对路径写到 `G:\three`。用户诉求其实只是
+    #: "能在别处建工程"，而那由 `work_dir` 指向哪里决定，不需要放弃边界。
+    extra_roots: tuple[Path, ...] = ()
     timeout_sec: int = 30
     sandbox: bool = False           # shell 是否走 OS 级沙箱（仅 Windows 生效）
     low_integrity: bool = False     # 沙箱内是否降为低完整性级别（需把 cwd 降 IL，默认关）
@@ -161,16 +167,33 @@ class LocalExecutor:
             out += f"\n[stderr]\n{proc.stderr}"
         return f"exit={proc.returncode}\n{out.strip()[:_OUTPUT_LIMIT]}"
 
+    def _allowed_roots(self) -> list[Path]:
+        """可访问的根目录：cwd 恒在其中，其余来自显式白名单。"""
+        roots = [self.cwd.resolve()]
+        for r in self.extra_roots:
+            try:
+                rr = Path(r).resolve()
+            except (OSError, ValueError):
+                continue
+            if rr not in roots:
+                roots.append(rr)
+        return roots
+
     def _resolve_path(self, path: str):
-        """解析路径并做越界检查。越界返回 None。"""
-        root = self.cwd.resolve()
-        target = (root / path).resolve()
-        if not self.allow_outside:
+        """解析路径并做越界检查。越界返回 None。
+
+        边界 = `cwd`（当前 work_dir）+ `extra_roots`，**没有"关闭边界"的分支**：
+        想往外写就在白名单里显式加根目录，而不是把检查整个跳过——
+        "设了工作目录却还能被绝对路径写出去"正是那样来的。
+        """
+        target = (self.cwd.resolve() / path).resolve()
+        for root in self._allowed_roots():
             try:
                 target.relative_to(root)
+                return target
             except ValueError:
-                return None
-        return target
+                continue
+        return None
 
     def _read(self, args: dict) -> str:
         """读文件，带行号输出（cat -n 风格）。
