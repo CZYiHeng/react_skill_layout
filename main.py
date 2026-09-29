@@ -18,9 +18,10 @@ for _stream in (sys.stdout, sys.stderr, sys.stdin):
 
 from rich.console import Console
 
-from react.acceptance import (SpecError, canonical_spec_path, confirm_spec,
-                              draft_spec, finalize, load_spec, run_all,
-                              run_spec, write_draft)
+from react.acceptance import (SpecError, canonical_spec_path, clarifications,
+                              confirm_spec, draft_spec, finalize, load_spec,
+                              resolve_clarification, run_all, run_spec,
+                              unresolved_clarifications, write_draft)
 from react.action import ACTION_NAMES, DEFAULT_VARIANT, ActionRegistry
 from react.capability import CAPABILITIES_DIR
 from react.config import (ConfigError, active_provider_name, load_config as load_config_module,
@@ -314,14 +315,15 @@ def cmd_new_capability(name: str, console: Console, base_dir: Path = BASE_DIR,
 
 
 def cmd_verify(spec: Path, work_dir: Path | None, out_dir: Path | None,
-               console: Console) -> int:
+               console: Console, *, allow_unresolved: bool = False) -> int:
     """`--verify`：按 requirement-set 逐条执行验收判据，产出覆盖表与缺口清单。
 
     这是"完成判据是系统概念"的落地入口——**不调用模型**，判据由上游「需求」能力提供。
-    退出码：0=全部通过；1=有失败/无法验收/执行异常。
+    退出码：0=全部通过；1=有失败/无法验收/执行异常/有未决歧义。
     工作目录默认取配置里的 `work_dir`，且沿用同一套边界（越界由执行器拒绝）。
     `spec` 为空串时读规范位置 `<工作目录>/.react-agent/spec.json`。
-    默认要求 spec **已确认**——未确认的只是提议，不得进入实施。
+    默认要求 spec **已确认**（未确认的只是提议）；且**有未决歧义时拒绝执行**——
+    歧义不解决就往实现走，等于让实现者替你选一个解读。
     """
     if work_dir is None:
         try:
@@ -338,14 +340,19 @@ def cmd_verify(spec: Path, work_dir: Path | None, out_dir: Path | None,
     spec_path = Path(spec) if spec else canonical_spec_path(resolved)
 
     try:
-        # 默认要求已确认：未确认的只是提议，不得进入实施（这是判据化的前提）
-        data, units = load_spec(spec_path, require_confirmed=True)
+        # 默认要求已确认 + 无未决歧义：未确认的只是提议，带歧义的"通过"可能只是
+        # 恰好满足了某个自选解读。两者都不得进入实施。
+        data, units = load_spec(spec_path, require_confirmed=True,
+                                allow_unresolved=allow_unresolved)
         evidence = run_all(units, resolved)
     except SpecError as e:
         # spec 不合法是**配置错误**，不是"验收失败"——分开报，别让用户以为是代码的问题
         console.print(f"[red]✘ requirement-set 不可用：{e}[/red]")
         return 1
 
+    if allow_unresolved and unresolved_clarifications(data):
+        console.print("[yellow]⚠ 带着未决歧义运行——「通过」可能只是满足了某个自选解读，"
+                      "不等于需求真的被满足。[/yellow]")
     verdict = finalize(data, units, evidence, out)
     for e in evidence:
         mark = {"pass": "[green]✅[/green]", "fail": "[red]❌[/red]",
@@ -426,6 +433,73 @@ def cmd_confirm_spec(spec_path: Path, console: Console) -> int:
     return 0
 
 
+def cmd_resolve(cid: str, answer: str, work_dir: Path | None,
+                console: Console, spec_hint: Path | None = None) -> int:
+    """`--resolve <歧义ID> <决定>`：把歧义的决定**落盘成契约**。
+
+    这是"歧义不解决不得进入实施"的配套动作：决定必须写进 spec，
+    否则它就只活在对话里，任务一结束（`context.reset()`）就没了。
+    """
+    resolved_dir = _resolve_work_dir(work_dir, console)
+    if resolved_dir is None:
+        return 1
+    spec = spec_hint if spec_hint else canonical_spec_path(resolved_dir)
+    import time
+    try:
+        data = resolve_clarification(
+            spec, cid, answer, now=time.strftime("%Y-%m-%d %H:%M:%S"))
+    except SpecError as e:
+        console.print(f"[red]✘ 无法落盘决定：{e}[/red]")
+        return 1
+    console.print(f"[green]✔ 已落盘[/green] {cid} → [bold]{answer}[/bold] · {spec}")
+    still = unresolved_clarifications(data)
+    if still:
+        console.print(f"[yellow]仍有 {len(still)} 条未决歧义：[/yellow]")
+        for c in still:
+            console.print(f"  ❓ {c.id}：{c.question}")
+        return 0
+    console.print("  歧义已全部解决，可以 `--verify` 了。")
+    return 0
+
+
+def cmd_show_clarify(work_dir: Path | None, console: Console,
+                     spec_hint: Path | None = None) -> int:
+    """`--show-clarify`：列出歧义与决定状态。"""
+    resolved_dir = _resolve_work_dir(work_dir, console)
+    if resolved_dir is None:
+        return 1
+    spec = spec_hint if spec_hint else canonical_spec_path(resolved_dir)
+    try:
+        data, _ = load_spec(spec)
+    except SpecError as e:
+        console.print(f"[red]✘ 读不了 spec：{e}[/red]")
+        return 1
+    items = clarifications(data)
+    if not items:
+        console.print(f"  {spec} 里没有歧义条目。")
+        return 0
+    for c in items:
+        mark = "[green]已决[/green]" if c.resolved else "[yellow]未决[/yellow]"
+        console.print(f"  {mark} [bold]{c.id}[/bold] {c.question}")
+        if c.why:
+            console.print(f"      [dim]为什么重要：{c.why}[/dim]")
+        if c.options:
+            console.print(f"      [dim]选项：{' | '.join(c.options)}[/dim]")
+        if c.blocks:
+            console.print(f"      [dim]卡住：{','.join(c.blocks)}[/dim]")
+        if c.resolved:
+            console.print(f"      [green]决定：{c.answer}[/green]"
+                          + (f"（{c.decided_at}）" if c.decided_at else ""))
+    pending = [c for c in items if not c.resolved]
+    console.print()
+    if pending:
+        console.print(f"[yellow]{len(pending)} 条未决 —— 未解决前 `--verify` 会拒绝执行。[/yellow]")
+        console.print("  用 `--resolve <ID> <决定>` 落盘。")
+        return 1
+    console.print("[green]全部已决。[/green]")
+    return 0
+
+
 def cmd_check(console: Console, skills_dir: Path | None) -> None:
     """`--check`：只校验配置并打印生效接入与当前 skill 绑定，不启动循环。
 
@@ -490,6 +564,16 @@ def main() -> None:
                              "<工作目录>/.react-agent/spec.json，并列出缺判据的条目。不调用模型")
     parser.add_argument("--confirm-spec", type=Path, metavar="SPEC.json",
                         help="把 spec 标为已确认（未确认的 spec 不得进入实施）")
+    parser.add_argument("--spec", type=Path, default=None,
+                        help="显式指定 requirement-set 路径（默认 <工作目录>/.react-agent/spec.json）")
+    parser.add_argument("--resolve", nargs=2, metavar=("歧义ID", "决定"),
+                        help="把一条歧义的决定落盘到 spec（如 --resolve C1 文件内）。"
+                             "落盘后它成为契约，后续轮次与后续任务都读得到")
+    parser.add_argument("--show-clarify", nargs="?", const="", metavar="SPEC.json",
+                        help="列出 spec 里的歧义及其决定状态")
+    parser.add_argument("--allow-unresolved", action="store_true",
+                        help="--verify 时允许带着未决歧义运行（结论会标出这一点，"
+                             "因为此时「通过」可能只是恰好满足了某个自选解读）")
     parser.add_argument("--smoke", action="store_true", help="冒烟测试（Mock 模型，零 API 消耗）")
     parser.add_argument("--smoke-live", action="store_true", help="冒烟测试（真实 kimi API）")
     parser.add_argument("--new-capability", metavar="名字",
@@ -521,11 +605,19 @@ def main() -> None:
     elif args.check:
         cmd_check(console, skills_dir)
     elif args.verify is not None:
-        sys.exit(cmd_verify(args.verify, args.verify_dir, args.verify_out, console))
+        sys.exit(cmd_verify(args.verify, args.verify_dir, args.verify_out, console,
+                            allow_unresolved=args.allow_unresolved))
     elif args.intake:
         sys.exit(cmd_intake(args.intake, args.verify_dir, console))
     elif args.confirm_spec:
         sys.exit(cmd_confirm_spec(args.confirm_spec, console))
+    elif args.resolve:
+        sys.exit(cmd_resolve(args.resolve[0], args.resolve[1], args.verify_dir,
+                             console, spec_hint=args.spec))
+    elif args.show_clarify is not None:
+        sys.exit(cmd_show_clarify(args.verify_dir, console,
+                                  spec_hint=args.spec or (Path(args.show_clarify)
+                                                          if args.show_clarify else None)))
     elif args.smoke:
         cmd_smoke(live=False, skills_dir=skills_dir, console=console)
     elif args.smoke_live:

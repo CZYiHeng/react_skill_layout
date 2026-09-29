@@ -74,6 +74,31 @@ class Unit:
 
 
 @dataclass
+class Clarification:
+    """一条**阻塞型歧义**：需求有多种合理解读，必须由人定。
+
+    为什么要有它：真实运行里 `coding` 能力自己识别出了歧义（"内容完全重复的行"是
+    文件内还是跨文件？）并倾向 ASK——**识别这一半是对的**。但 ASK 的答案只进了对话，
+    任务结束 `context.reset()` 之后就没位置了，下次还得再问一遍，而 spec 里
+    **永远没有这条约束**。所以歧义必须能在 requirement-set 里落盘。
+
+    与 ASK 的分工：**ASK 用来拿到答案，本字段用来固化答案**。
+    """
+
+    id: str
+    question: str
+    why: str = ""
+    options: list[str] = field(default_factory=list)
+    blocks: list[str] = field(default_factory=list)
+    answer: str | None = None
+    decided_at: str | None = None
+
+    @property
+    def resolved(self) -> bool:
+        return bool(self.answer)
+
+
+@dataclass
 class Evidence:
     """一次执行的回执。**只由真实执行产生**。"""
 
@@ -97,7 +122,8 @@ class Evidence:
         return f"`{head}` → exit {self.exit_code}"
 
 
-def load_spec(path: Path, *, require_confirmed: bool = False) -> tuple[dict, list[Unit]]:
+def load_spec(path: Path, *, require_confirmed: bool = False,
+              allow_unresolved: bool = False) -> tuple[dict, list[Unit]]:
     """读并校验 requirement-set。返回 (原始 dict, 单元列表)。
 
     校验刻意严格：**判据不完整就必须报出来**（G1），而不是让它在实现阶段被悄悄跳过。
@@ -105,6 +131,10 @@ def load_spec(path: Path, *, require_confirmed: bool = False) -> tuple[dict, lis
     `require_confirmed=True` 时，`confirmed` 为假的 spec **一律拒绝**。这是设计文档
     A5 的落地："未确认时不得进入实现"——判据化只是**提议**，人认可了才算判据。
     默认不检查，是为了让 `--intake` 等工具能读自己的草稿。
+
+    `allow_unresolved=False`（默认）时，**有未答的 `clarify` 条目一律拒绝**。
+    歧义不解决就往实现走，等于让实现者替你选一个解读——而那正是"猜需求"。
+    确实要先跑一次时可以 `allow_unresolved=True`，此时结论里必须标出"带着未决歧义运行"。
     """
     p = Path(path)
     if not p.is_file():
@@ -193,7 +223,113 @@ def load_spec(path: Path, *, require_confirmed: bool = False) -> tuple[dict, lis
             units.append(Unit(
                 id=uid, statement=stmt, artifacts=art_list,
                 unverifiable=f"未知 acceptance.kind：{kind!r}（支持 command / predicate）"))
+
+    # ---- 歧义（clarify）：schema 校验 + 阻塞规则 ----
+    raw_clar = data.get("clarify") or []
+    if not isinstance(raw_clar, list):
+        raise SpecError("clarify 应为列表")
+    unit_ids = {u.id for u in units}
+    for i, rc in enumerate(raw_clar, 1):
+        if not isinstance(rc, dict):
+            raise SpecError(f"clarify[{i}] 不是对象")
+        cid = str(rc.get("id", "")).strip()
+        if not cid:
+            raise SpecError(f"clarify[{i}] 缺少 id")
+        q = str(rc.get("question", "")).strip()
+        if not q:
+            raise SpecError(f"{cid} 缺少 question")
+        opts = rc.get("options") or []
+        if not isinstance(opts, list):
+            raise SpecError(f"{cid} 的 options 应为列表")
+        blocks = rc.get("blocks") or []
+        if not isinstance(blocks, list):
+            raise SpecError(f"{cid} 的 blocks 应为列表")
+        for b in blocks:
+            if str(b) not in unit_ids:
+                raise SpecError(
+                    f"{cid} 的 blocks 指向不存在的需求 {b!r}（歧义必须指向真实需求）")
+        ans = rc.get("answer")
+        if ans is not None and not isinstance(ans, str):
+            raise SpecError(f"{cid} 的 answer 应为字符串或 null")
+
+    if require_confirmed and not allow_unresolved:
+        pending = [c for c in raw_clar
+                   if isinstance(c, dict) and not c.get("answer")]
+        if pending:
+            detail = "；".join(
+                f"{c.get('id')}: {str(c.get('question', ''))[:60]}" for c in pending[:3])
+            raise SpecError(
+                f"有 {len(pending)} 条**未解决的歧义**，不得进入实施：{detail}。"
+                "歧义不解决就往实现走，等于让实现者替你选一个解读。"
+                "请用 `--resolve <ID> <选择>`（两个参数，空格分隔）落盘决定"
+                "（确实要先跑一次可加 `--allow-unresolved`，结论会标出这一点）")
+
     return data, units
+
+
+def clarifications(data: dict) -> list[Clarification]:
+    """从 spec 里取出歧义条目（不做校验，校验在 `load_spec` 里）。"""
+    out: list[Clarification] = []
+    for rc in data.get("clarify") or []:
+        if not isinstance(rc, dict):
+            continue
+        out.append(Clarification(
+            id=str(rc.get("id", "")),
+            question=str(rc.get("question", "")),
+            why=str(rc.get("why", "")),
+            options=[str(o) for o in (rc.get("options") or [])],
+            blocks=[str(b) for b in (rc.get("blocks") or [])],
+            answer=(None if rc.get("answer") is None else str(rc["answer"])),
+            decided_at=(None if rc.get("decided_at") is None else str(rc["decided_at"])),
+        ))
+    return out
+
+
+def unresolved_clarifications(data: dict) -> list[Clarification]:
+    return [c for c in clarifications(data) if not c.resolved]
+
+
+def resolve_clarification(path: Path, cid: str, answer: str,
+                          *, now: str = "") -> dict:
+    """把一条歧义的决定**落盘**。返回改后的数据。
+
+    这是本机制存在的理由：ASK 的答案只活在对话里，任务一结束就没了；
+    写进 spec 才算**契约**，后续所有轮次与后续任务都读得到。
+    """
+    p = Path(path)
+    if not p.is_file():
+        raise SpecError(f"requirement-set 不存在：{p}")
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise SpecError(f"requirement-set 不是合法 JSON：{e}") from e
+    if not isinstance(data, dict):
+        raise SpecError("requirement-set 顶层必须是对象")
+    # 先做结构校验：往一个坏 spec 里写决定是最糟的结果
+    load_spec(p)
+
+    target = None
+    for rc in data.get("clarify") or []:
+        if isinstance(rc, dict) and str(rc.get("id", "")) == cid:
+            target = rc
+            break
+    if target is None:
+        known = [str(c.get("id")) for c in (data.get("clarify") or [])
+                 if isinstance(c, dict)]
+        raise SpecError(f"找不到歧义 {cid!r}；现有：{known or '（无）'}")
+
+    ans = answer.strip()
+    if not ans:
+        raise SpecError("决定不能为空")
+    opts = [str(o) for o in (target.get("options") or [])]
+    if opts and ans not in opts:
+        raise SpecError(
+            f"决定 {ans!r} 不在选项里；可选：{opts}（如确需自定义，请显式加进 options）")
+
+    target["answer"] = ans
+    target["decided_at"] = now or ""
+    p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return data
 
 
 # ---------------------------------------------------------------------------
@@ -515,11 +651,24 @@ def render_report(data: dict, units: list[Unit], evidence: list[Evidence]) -> st
     lines.append("## 缺口清单")
     lines.append("")
     gaps = build_gaps(units, evidence)
+    # 未决歧义排在缺口清单最前：它比"某条没验"更根本——**它意味着判据本身可能选错了**
+    pending = unresolved_clarifications(data)
+    if pending:
+        for c in pending:
+            blocked = f"（卡住 {','.join(c.blocks)}）" if c.blocks else ""
+            lines.append(f"- ❓ **未解决的歧义 {c.id}**{blocked}：{c.question}")
+        lines.append("")
     if gaps:
         for g in gaps:
             lines.append(f"- {g}")
-    else:
+    elif not pending:
         lines.append("- 无")
+    resolved = [c for c in clarifications(data) if c.resolved]
+    if resolved:
+        lines.append("")
+        lines.append("已解决的歧义（决定已落盘为契约）：")
+        for c in resolved:
+            lines.append(f"- {c.id}：{c.question} → **{c.answer}**")
     if oos:
         lines.append("")
         lines.append("明确不做（`out_of_scope`）：")
@@ -575,6 +724,7 @@ def finalize(data: dict, units: list[Unit], evidence: list[Evidence],
     }, ensure_ascii=False, indent=2), encoding="utf-8")
 
     gaps = build_gaps(units, evidence)
+    pending = unresolved_clarifications(data)
     verdict = {
         "schema_version": SCHEMA_VERSION,
         "goal": str(data.get("goal", "") or ""),
@@ -583,7 +733,19 @@ def finalize(data: dict, units: list[Unit], evidence: list[Evidence],
         "counts": {s: sum(1 for e in evidence if e.status == s) for s in _ALL_STATUSES},
         "all_passed": done,
         "gaps": gaps,
+        # 未决歧义必须出现在结论里：**带着歧义跑出来的"通过"是可疑的**
+        # ——它可能只是恰好满足了实现者自己选的那个解读。
+        "unresolved": [{"id": c.id, "question": c.question, "blocks": c.blocks}
+                       for c in pending],
+        "resolved": [{"id": c.id, "answer": c.answer, "decided_at": c.decided_at}
+                     for c in clarifications(data) if c.resolved],
     }
+    if pending:
+        verdict["gaps"] = list(gaps) + [
+            f"{c.id}：未解决的歧义 —— {c.question}"
+            + (f"（卡住 {','.join(c.blocks)}）" if c.blocks else "")
+            for c in pending
+        ]
     (out / "verdict.json").write_text(
         json.dumps(verdict, ensure_ascii=False, indent=2), encoding="utf-8")
 

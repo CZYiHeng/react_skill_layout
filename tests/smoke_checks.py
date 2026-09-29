@@ -2219,6 +2219,141 @@ def check_work_memory(base_dir: Path) -> list[str]:
     return failures
 
 
+def check_clarification_gate(base_dir: Path) -> list[str]:
+    """歧义门禁：需求有多解读时，**决定必须落盘成契约**才能进入实施。
+
+    真实由来：`coding` 能力在一次真实运行里自己识别出了歧义（"内容完全重复的行"
+    是文件内还是跨文件全局？）并倾向 ASK——识别这半是对的。但 ASK 的答案只进对话，
+    任务结束 `context.reset()` 之后就没位置了，spec 里**永远没有这条约束**。
+    本机制补的就是这一半：**ASK 拿答案，`clarify` 固化答案**。
+    """
+    import json
+    import tempfile
+
+    from react.acceptance import (SpecError, finalize, load_spec,
+                                  resolve_clarification, run_spec,
+                                  unresolved_clarifications)
+
+    failures: list[str] = []
+    with tempfile.TemporaryDirectory() as td:
+        w = Path(td)
+        (w / "src").mkdir()
+        (w / "src" / "ok.py").write_text("print('ok')\n", encoding="utf-8")
+        d = w / ".react-agent"
+        d.mkdir()
+        spec_p = d / "spec.json"
+
+        def write(clarify=None, units=None, confirmed=True):
+            spec_p.write_text(json.dumps({
+                "schema_version": 1, "confirmed": confirmed, "goal": "歧义测试",
+                "clarify": clarify if clarify is not None else [],
+                "unit": units or [
+                    {"id": "R1", "statement": "找出重复行",
+                     "acceptance": {"kind": "command", "run": "python src/ok.py",
+                                    "expect": "exit_code == 0"}},
+                ],
+                "out_of_scope": [],
+            }, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        base_clar = [{
+            "id": "C1",
+            "question": "范围是文件内还是跨文件？",
+            "why": "两种解读实现完全不同",
+            "options": ["文件内", "跨文件全局"],
+            "blocks": ["R1"],
+            "answer": None,
+            "decided_at": None,
+        }]
+
+        # 未决歧义 → 不得进入实施（默认）
+        write(base_clar)
+        try:
+            load_spec(spec_p, require_confirmed=True)
+            failures.append("未决歧义被放行进入实施（门禁失效）")
+        except SpecError:
+            pass
+        # 但无门禁读取仍要可以（否则 --intake/工具读不了自己的草稿）
+        try:
+            data, _ = load_spec(spec_p)
+        except SpecError as e:
+            failures.append(f"无门禁读取草稿不该报错：{e}")
+            data = {}
+        if len(unresolved_clarifications(data)) != 1:
+            failures.append("未决歧义未被识别")
+
+        # 显式允许 → 可跑，但结论**必须**标出未决歧义
+        _, units = load_spec(spec_p, require_confirmed=True, allow_unresolved=True)
+        _, units2, ev = run_spec(spec_p, w)
+        v = finalize(data, units2, ev, d)
+        if not v.get("unresolved"):
+            failures.append("允许绕过时结论未标出未决歧义（「通过」会被误信）")
+        if not any("未解决的歧义" in g for g in v["gaps"]):
+            failures.append("未决歧义没有进缺口清单")
+
+        # 决定落盘 → 成为契约；且落盘后才放行
+        resolve_clarification(spec_p, "C1", "文件内", now="t")
+        data2 = json.loads(spec_p.read_text(encoding="utf-8"))
+        c1 = (data2.get("clarify") or [{}])[0]
+        if c1.get("answer") != "文件内" or not c1.get("decided_at"):
+            failures.append("决定未落盘（跨任务就丢了，与 ASK 的毛病一样）")
+        try:
+            load_spec(spec_p, require_confirmed=True)
+        except SpecError as e:
+            failures.append(f"歧义解决后仍被拒：{e}")
+
+        # 决定必须在选项里（防随手写一个）
+        try:
+            resolve_clarification(spec_p, "C1", "随便编的")
+            failures.append("不在选项里的决定被接受")
+        except SpecError:
+            pass
+        # 未知歧义 id
+        try:
+            resolve_clarification(spec_p, "C99", "文件内")
+            failures.append("未知歧义 id 被接受")
+        except SpecError:
+            pass
+        # 空决定
+        try:
+            resolve_clarification(spec_p, "C1", "   ")
+            failures.append("空决定被接受")
+        except SpecError:
+            pass
+
+        # 歧义必须指向真实需求
+        bad = [dict(base_clar[0], blocks=["R99"], answer="文件内")]
+        write(bad)
+        try:
+            load_spec(spec_p)
+            failures.append("指向不存在需求的歧义被接受")
+        except SpecError:
+            pass
+        # 缺 question / 缺 id 也必须报错
+        write([dict(base_clar[0], question="")])
+        try:
+            load_spec(spec_p)
+            failures.append("缺 question 的歧义被接受")
+        except SpecError:
+            pass
+        # answer 类型不对
+        write([dict(base_clar[0], answer=123)])
+        try:
+            load_spec(spec_p)
+            failures.append("answer 非字符串却未被拒")
+        except SpecError:
+            pass
+
+        # 覆盖表要写出已决决定（人能从交付物看出需求是怎么被解释的）
+        write([dict(base_clar[0], answer="文件内", decided_at="t")])
+        from react.acceptance import render_report
+        data3, units3 = load_spec(spec_p, require_confirmed=True)
+        _, _, ev3 = run_spec(spec_p, w)
+        rep = render_report(data3, units3, ev3)
+        if "已解决的歧义" not in rep or "文件内" not in rep:
+            failures.append("覆盖表未写出已决决定（交付物看不出需求被如何解释）")
+    return failures
+
+
 def check_tool_window() -> list[str]:
     """窗口化不得切出孤儿 tool 消息（否则 API 直接 400）。
 

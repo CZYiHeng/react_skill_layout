@@ -25,11 +25,16 @@ description: PLAN 阶段（代码档案）——把编码任务拆解为带可�
 ```bash
 # 看规范位置有没有，以及是否已确认（`confirmed: true`）
 read .react-agent/spec.json
+# 看歧义是否已解决
+python main.py --show-clarify --verify-dir <工作目录>
 ```
 
-- **有且已确认** → 它的 `unit[].id` / `statement` / `acceptance` 就是本次的契约。
+- **有且已确认、且无未决歧义** → 它的 `unit[].id` / `statement` / `acceptance` 就是本次的契约。
 - **没有** → 先 `--intake` 判据化并请人确认，再回来规划。
 - **有但未确认** → 只做规划草稿，**明确标注"待确认"**，不要下游按它动手。
+- **有未决 `clarify`** → **停**。歧义不解决就往实现走等于替需求方选了一个解读；
+  `--verify` 会拒绝执行。请人用 `--resolve <ID> <选择>` 落盘决定。
+- **本次规划中发现新歧义** → 追加进 `clarify`（带你的建议选项），不要自行选一个往下做。
 
 ## 输出格式（严格遵守）
 

@@ -113,6 +113,7 @@ def run_smoke(live: bool, skills_dir: Path, base_dir: Path,
     failures += C.check_capability_exposure(base_dir)
     failures += C.check_acceptance_engine(base_dir)
     failures += C.check_work_memory(base_dir)
+    failures += C.check_clarification_gate(base_dir)
     failures += C.check_native_tools(base_dir)
     failures += C.check_token_stats(base_dir)
     return failures, None
