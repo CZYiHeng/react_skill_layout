@@ -524,6 +524,10 @@ class ReActLoop:
     capability_name: str = ""
     #: 当前能力是否具备需求契约约定（coding 有；default 没有）
     capability_spec_capable: bool = False
+    #: **没有人类在应答**（无头 / MCP / 自动化）。需求契约闸门据此 fail-closed：
+    #: 无人应答时**不得替人确认契约**。依据 DSH `user-approval` 的生产默认——
+    #: "应答者缺失或失败时返回 unavailable，使操作以拒绝方式关闭；服务自身绝不会提示人类"。
+    gate_autonomous: bool = True
     #: 需求闸门的"能力不产 spec"告警只发一次（避免每轮重复打断）
     _req_warned: bool = field(default=False, init=False)
     #: 人工闸门档位：auto=仅必须拦时（默认）/ step=每步骤一次 / plan=计划批准一次
@@ -1132,6 +1136,20 @@ class ReActLoop:
         if cmd == "abort":
             self._aborted = True
             return LoopResult("aborted", self.context.round_no, "人工中止")
+
+        # ★ fail-closed：**没有人类在应答时，不得替人确认契约**。
+        #   依据 DSH `user-approval` 的生产默认——"应答者缺失或失败时返回 unavailable，
+        #   使操作以拒绝方式关闭；服务自身绝不会提示人类"。
+        #   此前本框架在无头/MCP 下默默返回 continue，等于替人签了需求契约；
+        #   真实运行里 `default` 能力被连问 4 次、每次都被占位回答放行，就是这么来的。
+        if self.gate_autonomous:
+            return LoopResult(
+                "escalated", self.context.round_no,
+                "需求契约需要**人工确认**，但当前没有人类在应答"
+                "（无头 / MCP / 自动化场景）。按 fail-closed 原则不代为确认。\n"
+                f"契约文件：{spec}\n"
+                "请人工确认后重跑，或改用交互式前端 / `--confirm-spec`。")
+
         # 人工确认 → 把 spec 标为已确认，本次运行起按它验收
         if spec.is_file() and not is_confirmed(data):
             try:
@@ -1143,6 +1161,7 @@ class ReActLoop:
                 return LoopResult("escalated", self.context.round_no,
                                   f"需求契约确认失败：{e}")
         return None
+
     def _check_interrupt(self) -> None:
         """每个阶段边界非阻塞看一眼有没有人工指令——「随时插手」的落点。
 

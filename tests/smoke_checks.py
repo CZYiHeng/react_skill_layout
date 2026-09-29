@@ -2609,7 +2609,7 @@ def check_requirements_flow(base_dir: Path) -> list[str]:
     reg = ActionRegistry()
     reg.load(base_dir / "capabilities" / "coding")
 
-    def mk_loop(wd: Path, gate=None, spec_capable=True):
+    def mk_loop(wd: Path, gate=None, spec_capable=True, autonomous=False):
         return ReActLoop(
             reg, SessionContext(max_rounds=3), MockClient(),
             RichRenderer(None, show_reasoning=False),
@@ -2618,7 +2618,9 @@ def check_requirements_flow(base_dir: Path) -> list[str]:
             # 答案不含这四个字，它会一直停在 ASK，六次后 escalated，**根本走不到闸门**。
             ask=lambda q: "冒烟回答：输入已确认", work_dir=wd, base_dir=base_dir,
             # 默认按"具备需求契约约定"（= coding）建；不产 spec 的能力另有断言覆盖
-            capability_name="coding", capability_spec_capable=spec_capable)
+            capability_name="coding", capability_spec_capable=spec_capable,
+            # 默认按"有人在应答"建（= Web/Cli）；fail-closed 另有断言覆盖
+            gate_autonomous=autonomous)
 
     with tempfile.TemporaryDirectory() as td:
         wd = Path(td)
@@ -2874,6 +2876,59 @@ def check_requirements_flow(base_dir: Path) -> list[str]:
         if a2.get("C1") != "a2":
             failures.append(f"单条 resolve 形式失效：{a2}")
 
+        # 6b2) ★ fail-closed：**无人应答时不得替人确认契约**。
+        #      依据 DSH `user-approval` 的生产默认（docs/subsystems/approval.md:21）：
+        #      "A missing, non-owning, throwing, or non-conforming answerer becomes
+        #      `unavailable` rather than opening the gate."
+        #      此前本框架在无头/MCP 下默默返回 continue，等于替人签了需求契约——
+        #      真实运行里 default 能力被连问 4 次、每次都被占位回答放行。
+        auto_wd = Path(td) / "failclosed"
+        auto_wd.mkdir()
+        acsp = canonical_spec_path(auto_wd)
+        acsp.parent.mkdir(parents=True, exist_ok=True)
+        acsp.write_text(json.dumps({
+            "schema_version": 1, "confirmed": False, "goal": "g",
+            "unit": [{"id": "R1", "statement": "s"}],
+            "clarify": [{"id": "C1", "question": "q", "options": ["a", "b"],
+                         "blocks": ["R1"]}],
+        }, ensure_ascii=False), encoding="utf-8")
+        # 即使"闸门回调"返回 continue（模拟无头下 ControlChannel 的默认返回），
+        # 也不能把契约确认掉
+        aloop2 = mk_loop(auto_wd, gate=lambda a, r="", c=None: ("continue", None),
+                         autonomous=True)
+        ares2 = aloop2._requirements_gate()
+        if ares2 is None:
+            failures.append("无人应答时代为确认了需求契约（应 fail-closed 拒绝）")
+        else:
+            txt = str(getattr(ares2, "final_text", ""))
+            if "人工确认" not in txt or "没有人类在应答" not in txt:
+                failures.append(f"fail-closed 的说明不明确：{txt[:60]!r}")
+        if json.loads(acsp.read_text(encoding="utf-8")).get("confirmed") is not False:
+            failures.append("无人应答时把 spec 改写成了已确认")
+        # 有人在应答时（默认）仍可正常确认
+        aloop3 = mk_loop(auto_wd, gate=lambda a, r="", c=None: ("resolve", "C1=a"))
+        aloop3._requirements_gate()
+        if json.loads(acsp.read_text(encoding="utf-8")).get("clarify", [{}])[0].get(
+                "answer") != "a":
+            failures.append("有人在应答时连歧义都落不了盘")
+        # 6b3) ★ `control.autonomous → loop` 的接线必须被覆盖。
+        #      上面直接给 loop 传 `gate_autonomous`，**绕过了 ControlChannel**——
+        #      把 AutoControl 标成"有人应答"、或让 service 不再透传，断言全不会变红。
+        from react.service import (AutoControl, CliControl, ControlChannel,
+                                   QueueControl)
+        if ControlChannel.autonomous is not True:
+            failures.append("ControlChannel 默认应为'无人应答'（fail-closed 的保守默认）")
+        if AutoControl.autonomous is not True:
+            failures.append("AutoControl 应标为无人应答（无头/MCP 没有人类）")
+        if CliControl.autonomous is not False:
+            failures.append("CliControl 应标为有人应答（终端在 input()）")
+        if QueueControl.autonomous is not False:
+            failures.append("QueueControl 应标为有人应答（前端会渲染闸门并回传）")
+        # service 必须把 control.autonomous 透传进 loop
+        svc_src = (base_dir / "react" / "service.py").read_text(encoding="utf-8")
+        if "gate_autonomous=control.autonomous" not in svc_src:
+            failures.append("service 没有把 control.autonomous 透传进 loop（fail-closed 会失效）")
+
         # 7) 渲染契约：需求闸门**不能套用缺陷模板**（真实截图上就是这么错的）
         #    前端靠 `action === 'requirements'` 分流，`ctx.defect` 缺失时缺陷模板整块不渲染。
         gate_js = (base_dir / "web" / "src" / "components" / "GateBar.jsx")
@@ -2940,7 +2995,8 @@ def check_requirements_flow(base_dir: Path) -> list[str]:
             gate=lambda a, r="", c=None: ("continue", None),
             ask=lambda q: "冒烟回答：输入已确认",
             work_dir=nospec_wd, base_dir=base_dir,
-            capability_name="default", capability_spec_capable=False)
+            capability_name="default", capability_spec_capable=False,
+            gate_autonomous=False)   # 有人在应答（fail-closed 另有断言覆盖）
         nloop.render = type("R", (), {
             "warn": staticmethod(warns.append),
             "info": staticmethod(lambda *a, **k: None),
@@ -2966,7 +3022,8 @@ def check_requirements_flow(base_dir: Path) -> list[str]:
             gate=lambda a, r="", c=None: ("continue", None),
             ask=lambda q: "冒烟回答：输入已确认",
             work_dir=b2, base_dir=base_dir,
-            capability_name="default", capability_spec_capable=False)
+            capability_name="default", capability_spec_capable=False,
+            gate_autonomous=False)
         if nloop2._requirements_gate() is None:
             failures.append("不产 spec 的能力下，坏掉的 spec 被放行了（应仍拦下）")
 

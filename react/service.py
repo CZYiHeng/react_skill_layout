@@ -156,7 +156,18 @@ class NullRenderer:
 # 人工交互通道
 # ---------------------------------------------------------------------------
 class ControlChannel:
-    """gate / ask 的统一抽象。默认行为 = 全自动（无人工介入）。"""
+    """gate / ask 的统一抽象。默认行为 = 全自动（无人工介入）。
+
+    **`autonomous = True` 表示"没有人类在应答"**（无头 / MCP / 自动化）。
+    这面旗子存在的理由：需求契约闸门在生产环境（DSH `user-approval`）里的默认是
+    **fail-closed**——"应答者缺失或失败时返回 `unavailable`，使操作以拒绝方式关闭；
+    服务自身绝不会提示人类"。而本框架此前在这种情形下默默返回 `continue`，
+    等于**替人类签了需求契约**（真实运行里 `active_capability=default` 被连问 4 次、
+    每次都被占位回答放行）。所以闸门必须能分辨"有没有人在应答"。
+    """
+
+    #: 无人应答（无头 / MCP / 自动化）。子类按需覆盖。
+    autonomous: bool = True
 
     def wait_gate(self, action: str, reason: str = "",
                   context: dict | None = None) -> tuple[str, str | None]:
@@ -180,11 +191,17 @@ class ControlChannel:
 
 
 class AutoControl(ControlChannel):
-    """无头自动：每步直接继续，ASK 用占位回答（MCP / --smoke 场景）。"""
+    """无头自动：每步直接继续，ASK 用占位回答（MCP / --smoke 场景）。
+
+    `autonomous = True`（继承默认）：**没有人类在应答**。
+    需求契约闸门据此 fail-closed，不再默默替人确认契约。
+    """
 
 
 class CliControl(ControlChannel):
     """终端 REPL：步进控制走 input()，ASK 走 input()。"""
+
+    autonomous = False   # 有人在终端应答
 
     def __init__(self, console=None):
         self._console = console
@@ -281,6 +298,8 @@ class QueueControl(ControlChannel):
     工作线程在 `wait_gate` / `wait_answer` 里阻塞取队列，绝不占用 asyncio 事件循环。
     `close()` 用于会话关闭时唤醒并中止阻塞中的线程，避免僵尸线程。
     """
+
+    autonomous = False   # 有浏览器前端在应答（前端会渲染闸门并回传指令）
 
     def __init__(self, timeout_sec: float = 600.0,
                  on_gate_wait: Callable[..., None] | None = None):
@@ -623,6 +642,8 @@ class ReactService:
             # 能力名与"会不会产 spec"：闸门据此决定是拦人还是只告警（default 不产 spec）
             capability_name=self.capability.name,
             capability_spec_capable=self._capability_spec_capable(),
+            # 有没有人类在应答：需求契约闸门据此 fail-closed（DSH 的"缺应答者→拒绝"）
+            gate_autonomous=control.autonomous,
         )
         return Runtime(loop=loop, context=context, registry=registry,
                        executor=executor, control=control)
