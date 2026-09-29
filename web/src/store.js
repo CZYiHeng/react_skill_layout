@@ -164,11 +164,16 @@ export function reducer(state, action) {
           return { ...pushItem(state, { kind: 'ask', text: e.text }), awaiting: 'ask' }
 
         case 'gate':
+          // ★ 闸门动作在事件**顶层**（`AgentEvent.to_dict` 把 action 平铺到顶层，
+          //   payload 里只有 reason/context）。此前读的是 `e` 上的 gate+Action 键——
+          //   那个键不存在，于是一个空串同时废掉两处：GateBar 的 `isRequirements`
+          //   判假（走缺陷模板、显示"让模型按上面的缺陷自己修"），
+          //   以及需求闸门的倒计时没被关掉。
           return { ...state, awaiting: 'gate', gateReason: e.reason || '',
                    // 判断依据：缺陷原文、尝试次数、上轮纠偏、建议修法、涉及需求。
                    // 没有它用户只能看到"需要你指示"——不知道该指示什么。
                    gateContext: e.context || {},
-                   gateAction: e.gateAction || '',
+                   gateAction: e.action || '',
                    gateCount: state.gateCount + 1 }
 
         case 'info':

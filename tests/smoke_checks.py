@@ -2804,10 +2804,34 @@ def check_requirements_flow(base_dir: Path) -> list[str]:
         app_js = (base_dir / "web" / "src" / "App.jsx").read_text(encoding="utf-8")
         if "state.gateAction === 'requirements'" not in app_js:
             failures.append("需求闸门没有关掉自动倒计时（倒计时会替人签掉契约）")
-        # 后端必须转发 resolve，否则前端点了也没用
+
+        # ★ 闸门动作必须从**事件顶层** `e.action` 读。
+        #   后端 `AgentEvent.to_dict()` 把 action 平铺到顶层、payload 里只有
+        #   reason/context——前端若读 `e.gateAction`（不存在的键），会拿到空串，
+        #   于是一个键名拼错同时废掉两处：GateBar 的 isRequirements 判假（走缺陷模板）
+        #   与需求闸门的倒计时。真实截图里就是这么错的，且服务已重启、bundle 也是新的，
+        #   所以**纯源码检查也得盯住这一行**。
+        store_js = (base_dir / "web" / "src" / "store.js").read_text(encoding="utf-8")
+        gate_case = ""
+        if "case 'gate':" in store_js:
+            gate_case = store_js.split("case 'gate':")[1].split("case '")[0]
+        if not gate_case:
+            failures.append("store.js 里找不到 gate 事件分支")
+        else:
+            if "e.gateAction" in gate_case:
+                failures.append(
+                    "store.js 的 gate 分支读 `e.gateAction`——该键不存在（应为 `e.action`），"
+                    "会让 GateBar 走缺陷模板且倒计时不关")
+            if "e.action" not in gate_case:
+                failures.append("store.js 的 gate 分支没有从 e.action 取闸门动作")
+
+        # 后端必须把闸门动作放在顶层 action（与上面的前端读法配对）
+        src_web = (base_dir / "react" / "webapi.py").read_text(encoding="utf-8")
+        if 'AgentEvent("gate", action=action' not in src_web:
+            failures.append("后端 gate 事件没把动作用 action= 传（前端会取不到）")
+
         from react.webapi import api_control  # noqa: F401
         import inspect as _insp
-        src_web = (base_dir / "react" / "webapi.py").read_text(encoding="utf-8")
         if '"resolve"' not in src_web:
             failures.append("api_control 白名单不含 resolve（前端点了会被 400 拒）")
         _ = _insp
