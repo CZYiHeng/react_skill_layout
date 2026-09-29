@@ -17,6 +17,11 @@ export default function GateBar({
   const suggestion = String(ctx.suggestion || '').trim()
   const blocked = ctx.blocked_requirements || []
   const [expanded, setExpanded] = useState(false)
+  // 需求闸门：**本地累积选择**，全部选完再一次性提交。
+  // 为什么不能"点一个就提交"：那样闸门立刻关掉，用户看不到还剩几条没定、
+  // 也看不到自己刚选了什么——而这件事天然要连做几次（真实场景是 4 条）。
+  const [picks, setPicks] = useState({})
+  const [submitting, setSubmitting] = useState(false)
 
   const label = reason || (action ? `${action.toUpperCase()} 之后` : '需要确认')
   const pct = autoCountdown !== null ? Math.max(0, Math.min(100, (autoCountdown / 30) * 100)) : 0
@@ -37,6 +42,8 @@ export default function GateBar({
   const noAcc = new Set(ctx.missing_acceptance || [])
   const irrev = new Set(ctx.irreversible || [])
   const pendingClarify = ctx.clarify || []
+  // 已选但未提交的排除在外——用户能看清"还有几条要定"
+  const unresolvedCount = pendingClarify.filter((c) => !picks[c.id]).length
   const isRequirements = action === 'requirements'
   if (isRequirements) {
     return (
@@ -86,51 +93,67 @@ export default function GateBar({
         {pendingClarify.length ? (
           <div className="gatebar-clarify">
             <div className="gatebar-clarify-title">
-              待你决定的歧义（{pendingClarify.length} 条）——不定下来会阻止验收
+              待你决定的歧义（{pendingClarify.length} 条，已选 {Object.keys(picks).length} 条）
+              ——不定下来会阻止验收
             </div>
-            {pendingClarify.map((c) => (
-              <div className="clarifyrow" key={c.id}>
-                <div className="clarifyrow-q">
-                  <strong>{c.id}</strong> {c.question}
+            {pendingClarify.map((c) => {
+              const chosen = picks[c.id]
+              return (
+                <div className={`clarifyrow${chosen ? ' clarifyrow-done' : ''}`} key={c.id}>
+                  <div className="clarifyrow-q">
+                    <strong>{c.id}</strong> {c.question}
+                  </div>
+                  {c.why ? <div className="clarifyrow-why">为什么重要：{c.why}</div> : null}
+                  <div className="clarifyrow-opts">
+                    {(c.options || []).map((o) => (
+                      <button
+                        className={`btn btn-mini${chosen === o ? ' btn-picked' : ''}`}
+                        key={o}
+                        disabled={submitting}
+                        onClick={() => {
+                          // 只更新本地状态：闸门不关、其余条目仍在，能看清自己选了什么
+                          setPicks((p) => ({ ...p, [c.id]: o }))
+                        }}
+                      >
+                        {chosen === o ? `已选：${o}` : `选：${o}`}
+                      </button>
+                    ))}
+                    {!(c.options || []).length ? (
+                      <span className="clarifyrow-why">
+                        （该歧义没有给选项——请用「中止」后手工补 options，或让模型重出草稿）
+                      </span>
+                    ) : null}
+                  </div>
                 </div>
-                {c.why ? <div className="clarifyrow-why">为什么重要：{c.why}</div> : null}
-                <div className="clarifyrow-opts">
-                  {(c.options || []).map((o) => (
-                    <button
-                      className="btn btn-mini"
-                      key={o}
-                      onClick={() => onResolve?.(c.id, o)}
-                    >
-                      选：{o}
-                    </button>
-                  ))}
-                  {!(c.options || []).length ? (
-                    <span className="clarifyrow-why">
-                      （该歧义没有给选项——请用「中止」后手工补 options，或让模型重出草稿）
-                    </span>
-                  ) : null}
-                </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         ) : null}
 
         <div className="gatebar-paths">
-          <button className="btn" onClick={() => onContinue?.()}>
-            <strong>确认契约并开始</strong>
-            <span className="path-note">
-              确认后「实现」与「验收」都按这份契约执行
-              {noAcc.size ? `；${noAcc.size} 条无判据的会被记为未验收` : ''}
-            </span>
-          </button>
           <button
-            className="btn btn-warn"
-            disabled={!pendingClarify.length}
-            onClick={() => document.getElementById('clarify-anchor')?.focus()}
+            className="btn"
+            disabled={submitting}
+            onClick={() => {
+              setSubmitting(true)
+              // 一次性把全部决定交出去并确认：`C1=a;;C2=b;;[confirm]`
+              const body = Object.entries(picks).map(([k, v]) => `${k}=${v}`)
+              if (!body.length) {
+                // 没有待定的（或用户选择跳过）：直接确认
+                onContinue?.()
+                return
+              }
+              onResolve?.(null, null, [...body, '[confirm]'].join(';;'))
+            }}
           >
-            <strong>先定歧义</strong>
+            <strong>
+              {submitting ? '正在提交…' : `确认契约并开始${unresolvedCount ? `（还有 ${unresolvedCount} 条未选）` : ''}`}
+            </strong>
             <span className="path-note">
-              {pendingClarify.length ? '点上面各条的选项即可落盘' : '当前没有待定歧义'}
+              {unresolvedCount
+                ? '未选的歧义会保持未决，仍会阻止验收；也可以先只提交已选的'
+                : '确认后「实现」与「验收」都按这份契约执行'}
+              {noAcc.size ? `；${noAcc.size} 条无判据的会被记为未验收` : ''}
             </span>
           </button>
           <button className="btn btn-danger" onClick={() => onAbort?.()}>
@@ -138,7 +161,6 @@ export default function GateBar({
             <span className="path-note">停下本次任务，保留已有轨迹与契约草稿</span>
           </button>
         </div>
-        <span id="clarify-anchor" tabIndex={-1} />
       </div>
     )
   }

@@ -1076,27 +1076,46 @@ class ReActLoop:
                   else "仍有未解决的歧义")
         cmd, text = self.gate("requirements", reason, ctx) if self.gate else ("continue", None)
 
-        # 人在闸门上直接点了某个歧义选项 → 立刻落盘成契约，不用他再手敲
-        # `--resolve`。落盘后重新读一遍，本轮就能带着已决歧义继续。
+        # 人在闸门上点歧义选项 → 落盘成契约。支持两种：
+        #   单条：`C1=文件内`（保留：CLI 也可用）
+        #   批量：`C1=a;;C2=b;[confirm]` —— 前端把 4 条决定一次交出并确认。
+        # 为什么要有批量：一条一次提交会让闸门关掉，用户看不到"还剩几条没定"，
+        # 也不知道自己刚选了什么。**一次决策 ≠ 一次提交**——这件事天然要连做几次。
         if cmd == "resolve" and text:
-            cid, _, answer = text.partition("=")
-            if cid and answer:
+            parts = [p.strip() for p in str(text).split(";;") if p.strip()]
+            confirm_after = False
+            pairs: list[tuple[str, str]] = []
+            for part in parts:
+                if part == "[confirm]":
+                    confirm_after = True
+                    continue
+                cid, _, answer = part.partition("=")
+                if cid and answer:
+                    pairs.append((cid.strip(), answer.strip()))
+            applied: list[str] = []
+            for cid, answer in pairs:
                 try:
                     from react.acceptance import resolve_clarification
-                    resolve_clarification(spec, cid.strip(), answer.strip(),
-                                          now=self._now())
-                    data, _u = load_spec(spec, allow_unresolved=True,
-                                         allow_irreversible=True)
-                    pending = [{"id": c.id, "question": c.question, "why": c.why,
-                                "options": c.options, "blocks": c.blocks}
-                               for c in clarifications(data) if not c.resolved]
-                    ctx["clarify"] = pending
-                    ctx["confirmed"] = is_confirmed(data)
-                    ctx["resolved_now"] = f"{cid}={answer}"
-                    self.context.add_user(
-                        f"人工已定歧义 {cid}：{answer}（已落盘为契约）。")
+                    resolve_clarification(spec, cid, answer, now=self._now())
+                    applied.append(f"{cid}={answer}")
                 except Exception as e:  # noqa: BLE001 - 落盘失败要让人看见
                     self.context.add_user(f"歧义决定落盘失败（{cid}）：{e}")
+            if applied:
+                try:
+                    data, _u = load_spec(spec, allow_unresolved=True,
+                                         allow_irreversible=True)
+                    ctx["clarify"] = [
+                        {"id": c.id, "question": c.question, "why": c.why,
+                         "options": c.options, "blocks": c.blocks}
+                        for c in clarifications(data) if not c.resolved]
+                    ctx["confirmed"] = is_confirmed(data)
+                    ctx["resolved_now"] = "；".join(applied)
+                    self.context.add_user(
+                        f"人工已定歧义：{'；'.join(applied)}（已落盘为契约）。")
+                except Exception as e:  # noqa: BLE001
+                    self.context.add_user(f"歧义决定后重读 spec 失败：{e}")
+            if confirm_after:
+                cmd = "continue"   # 一并确认：走下面的确认逻辑
 
         # ★ 坏掉的 spec **一律不许往下走**：它读不懂，"继续"不能替代修好它。
         #   此前这里只把它当一次普通拦截，于是第二次就能被签成 confirmed 放行——

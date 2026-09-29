@@ -404,6 +404,12 @@ button { font-family: inherit; }
 .clarifyrow-why { font-size: 11px; color: #a16207; margin-top: 2px; }
 .clarifyrow-opts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
 .btn-mini { padding: 3px 10px; font-size: 12px; }
+/* 已选的歧义行与按钮：让用户看清"选了什么、还剩几条" */
+.clarifyrow-done { opacity: 0.72; }
+.clarifyrow-done .clarifyrow-q strong { color: #15803d; }
+.btn-picked {
+  border-color: #22c55e; background: #f0fdf4; color: #15803d; font-weight: 700;
+}
 .gatebar-actions, .askpanel-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .gatebar-actions .steer-input { flex: 1; min-width: 220px; }
 @media (max-width: 640px) {

@@ -2829,6 +2829,51 @@ def check_requirements_flow(base_dir: Path) -> list[str]:
         if (after.get("clarify") or [{}])[0].get("answer") != "文件内":
             failures.append("闸门上点歧义选项没有落盘成契约")
 
+        # 6b) ★ 批量决定 + 一并确认：`C1=a;;C2=b;;[confirm]` 必须一次落地。
+        #     为什么要有它：一条一次提交会让闸门关掉，用户看不到"还剩几条没定"、
+        #     也看不到自己刚选了什么——而这件事天然要连做几次（真实场景 4 条）。
+        batch_wd = Path(td) / "batchresolve"
+        batch_wd.mkdir()
+        bsp = canonical_spec_path(batch_wd)
+        bsp.parent.mkdir(parents=True, exist_ok=True)
+        bsp.write_text(json.dumps({
+            "schema_version": 1, "confirmed": False, "goal": "g",
+            "unit": [{"id": "R1", "statement": "s"}],
+            "clarify": [
+                {"id": "C1", "question": "q1", "options": ["a1", "a2"], "blocks": ["R1"]},
+                {"id": "C2", "question": "q2", "options": ["b1", "b2"], "blocks": ["R1"]},
+            ],
+        }, ensure_ascii=False), encoding="utf-8")
+        bloop3 = mk_loop(batch_wd, gate=lambda a, r="", c=None: (
+            "resolve", "C1=a1;;C2=b2;;[confirm]"))
+        res3 = bloop3._requirements_gate()
+        if res3 is not None:
+            failures.append(f"批量决定+确认后仍被拦：{getattr(res3, 'final_text', '')[:50]}")
+        adata = json.loads(bsp.read_text(encoding="utf-8"))
+        answers = {c["id"]: c.get("answer") for c in adata.get("clarify", [])}
+        if answers.get("C1") != "a1" or answers.get("C2") != "b2":
+            failures.append(f"批量决定没有全部落盘：{answers}")
+        if adata.get("confirmed") is not True:
+            failures.append("批量决定带 [confirm] 时没有把契约标为已确认")
+        # 单条形式仍要能用（CLI 也走它）——必须在**未确认**的 spec 上测：
+        # 已确认时闸门直接放行、根本不调门，拿它测单条 resolve 是无效的。
+        single_wd = Path(td) / "singleresolve"
+        single_wd.mkdir()
+        ssp = canonical_spec_path(single_wd)
+        ssp.parent.mkdir(parents=True, exist_ok=True)
+        ssp.write_text(json.dumps({
+            "schema_version": 1, "confirmed": False, "goal": "g",
+            "unit": [{"id": "R1", "statement": "s"}],
+            "clarify": [{"id": "C1", "question": "q1",
+                         "options": ["a1", "a2"], "blocks": ["R1"]}],
+        }, ensure_ascii=False), encoding="utf-8")
+        bloop4 = mk_loop(single_wd, gate=lambda a, r="", c=None: ("resolve", "C1=a2"))
+        bloop4._requirements_gate()
+        a2 = {c["id"]: c.get("answer")
+              for c in json.loads(ssp.read_text(encoding="utf-8")).get("clarify", [])}
+        if a2.get("C1") != "a2":
+            failures.append(f"单条 resolve 形式失效：{a2}")
+
         # 7) 渲染契约：需求闸门**不能套用缺陷模板**（真实截图上就是这么错的）
         #    前端靠 `action === 'requirements'` 分流，`ctx.defect` 缺失时缺陷模板整块不渲染。
         gate_js = (base_dir / "web" / "src" / "components" / "GateBar.jsx")

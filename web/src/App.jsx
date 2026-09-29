@@ -267,10 +267,11 @@ export default function App() {
       })
       .catch((e) => dispatch({ type: 'error', message: `切换能力失败：${e.message}` }))
   }
-  // 需求闸门：点某个歧义选项 → 立刻落盘成契约（text 形如 `C1=文件内`），
-  // 不必再手敲 `--resolve`
-  const doResolve = (cid, answer) => {
-    api.postControl(state.sessionId, 'resolve', `${cid}=${answer}`).catch((e) =>
+  // 需求闸门：提交歧义决定（可多条一起）+ 确认契约。
+  // 单条 `C1=文件内` 仍支持；批量 `C1=a;;C2=b;;[confirm]` 用于"全部选完一次提交"。
+  const doResolve = (cid, answer, batch) => {
+    const text = batch || `${cid}=${answer}`
+    api.postControl(state.sessionId, 'resolve', text).catch((e) =>
       dispatch({ type: 'error', message: e.message }))
     dispatch({ type: 'consumed' })
   }
