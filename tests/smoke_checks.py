@@ -1961,6 +1961,76 @@ def check_acceptance_engine(base_dir: Path) -> list[str]:
             failures.append("非 JSON 的 spec 未报错")
         except SpecError:
             pass
+
+        # ---- A5：判据化只产"提议"，未确认不得进入实施 ----
+        from react.acceptance import (canonical_spec_path, confirm_spec,
+                                      draft_spec, is_confirmed, write_draft)
+
+        desc = ("1. 找出内容重复的行，只统计\n"
+                "2. 支持 --delete 真正删除\n"
+                "3. 验收：`python -m pytest -q`\n"
+                "4. 要有 README\n")
+        draft = draft_spec(desc, goal="演示")
+        # 草稿必须未确认
+        if draft.get("confirmed"):
+            failures.append("A5 判据化草稿的 confirmed 必须为 false")
+        # **不脑补判据**：只有显式给出验收命令的那条才带 acceptance
+        got_acc = [u["id"] for u in draft["unit"] if u.get("acceptance")]
+        if len(got_acc) != 1:
+            failures.append(
+                f"A5 应只有 1 条能识别出判据（显式验收命令），实际 {len(got_acc)} 条：{got_acc}")
+        if not all(u.get("statement") for u in draft["unit"]):
+            failures.append("A5 拆出的条目有空 statement")
+
+        iw = tmp / "intake"
+        iw.mkdir()
+        # 规范位置
+        if canonical_spec_path(iw) != iw / ".react-agent" / "spec.json":
+            failures.append(f"A5 规范位置不对：{canonical_spec_path(iw)}")
+        sp = write_draft(draft, iw)
+        if sp != canonical_spec_path(iw):
+            failures.append("A5 草稿未写到规范位置")
+        # ★ 未确认 → require_confirmed 必须拒绝
+        try:
+            load_spec(sp, require_confirmed=True)
+            failures.append("A5 未确认的草稿竟能进入实施（确认门禁失效）")
+        except SpecError:
+            pass
+        # 不带 require_confirmed 时仍可读（否则 --intake 没法读自己的草稿）
+        try:
+            load_spec(sp)
+        except SpecError as e:
+            failures.append(f"A5 草稿应可被无门禁读取，却报错：{e}")
+        if is_confirmed({"confirmed": True}) is not True:
+            failures.append("A5 is_confirmed 对 true 判断错误")
+        # 确认后放行
+        confirm_spec(sp)
+        try:
+            _, units_c = load_spec(sp, require_confirmed=True)
+            if not units_c:
+                failures.append("A5 确认后读不到条目")
+        except SpecError as e:
+            failures.append(f"A5 确认后仍被拒：{e}")
+        # ★ 已确认的 spec 不得被草稿覆盖（否则人的确认会被悄悄丢掉）
+        try:
+            write_draft(draft, iw)
+            failures.append("A5 草稿覆盖了已确认的 spec")
+        except SpecError:
+            pass
+        # 确认前先做结构校验：坏 spec 不能被标成"已确认"
+        bad = tmp / "bad2.json"
+        bad.write_text(json.dumps({"schema_version": 1, "unit": []}), encoding="utf-8")
+        try:
+            confirm_spec(bad)
+            failures.append("A5 结构非法的 spec 被标成已确认")
+        except SpecError:
+            pass
+        # 空描述不得产出草稿
+        try:
+            draft_spec("   \n ")
+            failures.append("A5 空任务描述竟产出了草稿")
+        except SpecError:
+            pass
     return failures
 
 

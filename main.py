@@ -18,7 +18,9 @@ for _stream in (sys.stdout, sys.stderr, sys.stdin):
 
 from rich.console import Console
 
-from react.acceptance import SpecError, finalize, run_spec
+from react.acceptance import (SpecError, canonical_spec_path, confirm_spec,
+                              draft_spec, finalize, load_spec, run_all,
+                              run_spec, write_draft)
 from react.action import ACTION_NAMES, DEFAULT_VARIANT, ActionRegistry
 from react.capability import CAPABILITIES_DIR
 from react.config import (ConfigError, active_provider_name, load_config as load_config_module,
@@ -318,6 +320,8 @@ def cmd_verify(spec: Path, work_dir: Path | None, out_dir: Path | None,
     这是"完成判据是系统概念"的落地入口——**不调用模型**，判据由上游「需求」能力提供。
     退出码：0=全部通过；1=有失败/无法验收/执行异常。
     工作目录默认取配置里的 `work_dir`，且沿用同一套边界（越界由执行器拒绝）。
+    `spec` 为空串时读规范位置 `<工作目录>/.react-agent/spec.json`。
+    默认要求 spec **已确认**——未确认的只是提议，不得进入实施。
     """
     if work_dir is None:
         try:
@@ -331,12 +335,15 @@ def cmd_verify(spec: Path, work_dir: Path | None, out_dir: Path | None,
         )[0]
     resolved = Path(work_dir).resolve()
     out = Path(out_dir) if out_dir else resolved / ".react-agent"
+    spec_path = Path(spec) if spec else canonical_spec_path(resolved)
 
     try:
-        data, units, evidence = run_spec(spec, resolved)
+        # 默认要求已确认：未确认的只是提议，不得进入实施（这是判据化的前提）
+        data, units = load_spec(spec_path, require_confirmed=True)
+        evidence = run_all(units, resolved)
     except SpecError as e:
         # spec 不合法是**配置错误**，不是"验收失败"——分开报，别让用户以为是代码的问题
-        console.print(f"[red]✘ requirement-set 不合法：{e}[/red]")
+        console.print(f"[red]✘ requirement-set 不可用：{e}[/red]")
         return 1
 
     verdict = finalize(data, units, evidence, out)
@@ -354,6 +361,69 @@ def cmd_verify(spec: Path, work_dir: Path | None, out_dir: Path | None,
     for g in verdict["gaps"]:
         console.print(f"  [yellow]-[/yellow] {g}")
     return 1
+
+
+def _resolve_work_dir(work_dir: Path | None, console: Console) -> Path | None:
+    """取工作目录：显式给了就用，否则按配置解析（与 --verify 同一套边界）。"""
+    if work_dir is not None:
+        return Path(work_dir).resolve()
+    try:
+        cfg = load_config(_config_path(), console, quiet=True)
+    except ConfigError as e:
+        console.print(f"[red]✘ 配置不可用：{e}[/red]")
+        return None
+    return resolve_work_dir(
+        Path(__file__).resolve().parent, cfg.get("work_dir") or None,
+        allow_outside=bool(cfg.get("allow_outside_work_dir", False)),
+    )[0]
+
+
+def cmd_intake(desc_path: Path, work_dir: Path | None, console: Console) -> int:
+    """`--intake`：把任务描述判据化成 requirement-set 草稿。**不调用模型。**
+
+    退出码：0=已产出草稿；1=失败。
+    草稿的 `confirmed` 恒为 false——判据化**产的是提议，不是事实**，
+    必须人审阅后 `--confirm-spec` 才能进入实施。
+    """
+    if not desc_path.is_file():
+        console.print(f"[red]✘ 任务描述文件不存在：{desc_path}[/red]")
+        return 1
+    resolved = _resolve_work_dir(work_dir, console)
+    if resolved is None:
+        return 1
+    task = desc_path.read_text(encoding="utf-8")
+    try:
+        draft = draft_spec(task)
+        p = write_draft(draft, resolved)
+    except SpecError as e:
+        console.print(f"[red]✘ 判据化失败：{e}[/red]")
+        return 1
+
+    no_acc = [u["id"] for u in draft["unit"] if not u.get("acceptance")]
+    console.print(f"[green]✔ 草稿已产出[/green] · {p}")
+    console.print(f"  条目 {len(draft['unit'])} 条 · "
+                  f"[yellow]缺判据 {len(no_acc)} 条[/yellow]（会在缺口清单里显式列出）")
+    for u in draft["unit"]:
+        acc = u.get("acceptance")
+        mark = "[green]可验收[/green]" if acc else "[yellow]无法验收[/yellow]"
+        console.print(f"  {u['id']}  {mark}  [dim]{u['statement'][:60]}[/dim]")
+    console.print()
+    console.print("[yellow]注意：这是**提议**，尚未确认，不得进入实施。[/yellow]")
+    console.print(f"  缺判据的条目请让上游补，或手工补进 `{p}`；"
+                  f"审阅后用 `--confirm-spec \"{p}\"` 确认。")
+    return 0
+
+
+def cmd_confirm_spec(spec_path: Path, console: Console) -> int:
+    """`--confirm-spec`：把 spec 标为已确认。**独立动作**，不做隐式确认。"""
+    try:
+        confirm_spec(spec_path)
+    except SpecError as e:
+        console.print(f"[red]✘ 无法确认：{e}[/red]")
+        return 1
+    console.print(f"[green]✔ 已确认[/green] · {spec_path}")
+    console.print("  此后 `--verify` 才会按它执行（未确认的 spec 一律拒绝）。")
+    return 0
 
 
 def cmd_check(console: Console, skills_dir: Path | None) -> None:
@@ -407,13 +477,19 @@ def main() -> None:
                         help="从 ~/.claude/skills 绑定 skill 到动作槽位，如 --bind plan dev-flow")
     parser.add_argument("--check", action="store_true",
                         help="只校验配置并打印生效接入（0=可用 / 1=不可用），不启动循环")
-    parser.add_argument("--verify", metavar="SPEC.json",
+    parser.add_argument("--verify", metavar="SPEC.json", nargs="?", const="",
                         help="按 requirement-set 逐条执行验收判据，产出覆盖表与缺口清单"
-                             "（0=全部通过 / 1=有失败或无法验收）。不调用模型")
+                             "（0=全部通过 / 1=有失败或无法验收）。不调用模型。"
+                             "省略路径时读默认位置 <工作目录>/.react-agent/spec.json")
     parser.add_argument("--verify-dir", type=Path, default=None,
                         help="--verify 的工作目录（默认取配置里的 work_dir）")
     parser.add_argument("--verify-out", type=Path, default=None,
                         help="--verify 的产物目录（默认 <工作目录>/.react-agent/）")
+    parser.add_argument("--intake", type=Path, metavar="任务描述.md",
+                        help="把一段任务描述**判据化**成 requirement-set 草稿，写到"
+                             "<工作目录>/.react-agent/spec.json，并列出缺判据的条目。不调用模型")
+    parser.add_argument("--confirm-spec", type=Path, metavar="SPEC.json",
+                        help="把 spec 标为已确认（未确认的 spec 不得进入实施）")
     parser.add_argument("--smoke", action="store_true", help="冒烟测试（Mock 模型，零 API 消耗）")
     parser.add_argument("--smoke-live", action="store_true", help="冒烟测试（真实 kimi API）")
     parser.add_argument("--new-capability", metavar="名字",
@@ -444,8 +520,12 @@ def main() -> None:
         cmd_bind(args.bind[0], args.bind[1], skills_dir, console)
     elif args.check:
         cmd_check(console, skills_dir)
-    elif args.verify:
-        sys.exit(cmd_verify(Path(args.verify), args.verify_dir, args.verify_out, console))
+    elif args.verify is not None:
+        sys.exit(cmd_verify(args.verify, args.verify_dir, args.verify_out, console))
+    elif args.intake:
+        sys.exit(cmd_intake(args.intake, args.verify_dir, console))
+    elif args.confirm_spec:
+        sys.exit(cmd_confirm_spec(args.confirm_spec, console))
     elif args.smoke:
         cmd_smoke(live=False, skills_dir=skills_dir, console=console)
     elif args.smoke_live:
