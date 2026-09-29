@@ -236,6 +236,9 @@ _REPAIR_HINTS = {
 }
 _REPAIR_MAX = 2  # 每个歧义步最多自我修正次数
 _MAX_ASK_TURNS = 6  # ASK 轮次独立上限，防止模型反复提问死循环（缺口 g）
+#: 单次 `_requirements_gate` 调用内因"人答了一条歧义"而重开闸门的次数上限。
+#: 正常只需"歧义条数"次；超限说明落的答案没被判定为已解决（答案非法等）。
+_MAX_REQ_GATE_ROUNDS = 32
 _MISS_LIMIT = 3  # OBSERVE 连续非通过达此数 → 强制下一轮 THINK 重出 PLAN（防原地打转）
 _MEMORY_MAX_CHARS = 600  # 会话记忆里「上一任务结论」的字数上限（约 400 token，防膨胀）
 
@@ -530,6 +533,9 @@ class ReActLoop:
     gate_autonomous: bool = True
     #: 需求闸门的"能力不产 spec"告警只发一次（避免每轮重复打断）
     _req_warned: bool = field(default=False, init=False)
+    #: 同一次 `_requirements_gate` 调用里因"答了一条歧义"而重开闸门的次数上限。
+    #: 防呆：若某条歧义怎么答都仍是未决（答案非法等），不能无限重入。
+    _req_gate_round: int = field(default=0, init=False)
     #: 人工闸门档位：auto=仅必须拦时（默认）/ step=每步骤一次 / plan=计划批准一次
     #: / phase=每阶段一次（旧行为，回滚开关）
     gate_mode: str = "auto"
@@ -1006,6 +1012,10 @@ class ReActLoop:
         真实运行里出现过整轮产出工程却从未生成 spec 的情况。
 
         返回 None 表示可以继续（有已确认的 spec，或人工选择继续时把 spec 标为已确认）。
+
+        人每答完**一条**歧义，本函数会**递归重入一次**（重新从磁盘读 spec），
+        于是同一次调用里可以连着答完所有条目、对话框不关闭。重入次数有上限
+        `_MAX_REQ_GATE_ROUNDS` 防呆。
         """
         from pathlib import Path as _P
 
@@ -1078,6 +1088,7 @@ class ReActLoop:
         reason = ("还没有已确认的需求契约（requirement-set）" if not spec.is_file()
                   else "需求契约尚未确认" if not is_confirmed(data)
                   else "仍有未解决的歧义")
+        # 重入时不再需要（每次重入都从磁盘重建 ctx）
         cmd, text = self.gate("requirements", reason, ctx) if self.gate else ("continue", None)
 
         # 人在闸门上点歧义选项 → 落盘成契约。支持两种：
@@ -1120,6 +1131,21 @@ class ReActLoop:
                     self.context.add_user(f"歧义决定后重读 spec 失败：{e}")
             if confirm_after:
                 cmd = "continue"   # 一并确认：走下面的确认逻辑
+            else:
+                # ★★ 答完**一条**歧义后，**在同一次调用里重新打开闸门**。
+                #     曾经的真实事故（用户原话"点一下就关闭了"）：点一个选项 → 落盘 C1
+                #     → 代码直接漏到下面的 `confirm_spec` → **整份契约被签** → return None
+                #     → 闸门结束、对话框关闭，剩下的 C3/C4 再没机会回答
+                #     （事后 spec 里 C1/C2 有答案、C3/C4 空白、confirmed: true）。
+                #     这里改为重入：ctx 从磁盘重建，人能看到"还剩什么"并接着答。
+                self._req_gate_round += 1
+                if self._req_gate_round > _MAX_REQ_GATE_ROUNDS:
+                    # 防呆：某条歧义怎么答都仍未被判定为已解决（答案非法等）
+                    return LoopResult(
+                        "escalated", self.context.round_no,
+                        f"连续 {_MAX_REQ_GATE_ROUNDS} 次落的歧义决定都未生效，"
+                        f"契约仍有未决条目。请检查 {spec} 的 clarify 字段。")
+                return self._requirements_gate()
 
         # ★ 坏掉的 spec **一律不许往下走**：它读不懂，"继续"不能替代修好它。
         #   此前这里只把它当一次普通拦截，于是第二次就能被签成 confirmed 放行——

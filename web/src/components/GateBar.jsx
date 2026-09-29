@@ -133,13 +133,16 @@ export default function GateBar({
         <div className="gatebar-paths">
           <button
             className="btn"
-            disabled={submitting}
+            disabled={submitting || unresolvedCount > 0}
+            title={unresolvedCount > 0
+              ? `还有 ${unresolvedCount} 条歧义没选，不能确认契约`
+              : '确认这份契约，之后「实现」与「验收」都按它执行'}
             onClick={() => {
               setSubmitting(true)
               // 一次性把全部决定交出去并确认：`C1=a;;C2=b;;[confirm]`
               const body = Object.entries(picks).map(([k, v]) => `${k}=${v}`)
               if (!body.length) {
-                // 没有待定的（或用户选择跳过）：直接确认
+                // 没有待定歧义：直接确认
                 onContinue?.()
                 return
               }
@@ -147,11 +150,14 @@ export default function GateBar({
             }}
           >
             <strong>
-              {submitting ? '正在提交…' : `确认契约并开始${unresolvedCount ? `（还有 ${unresolvedCount} 条未选）` : ''}`}
+              {submitting ? '正在提交…'
+                : unresolvedCount
+                  ? `先定完剩下 ${unresolvedCount} 条歧义`
+                  : '确认契约并开始'}
             </strong>
             <span className="path-note">
               {unresolvedCount
-                ? '未选的歧义会保持未决，仍会阻止验收；也可以先只提交已选的'
+                ? '未决歧义会让「实现」写错方向、「验收」也无法判定——先逐条选定才放行'
                 : '确认后「实现」与「验收」都按这份契约执行'}
               {noAcc.size ? `；${noAcc.size} 条无判据的会被记为未验收` : ''}
             </span>

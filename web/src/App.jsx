@@ -269,11 +269,17 @@ export default function App() {
   }
   // 需求闸门：提交歧义决定（可多条一起）+ 确认契约。
   // 单条 `C1=文件内` 仍支持；批量 `C1=a;;C2=b;;[confirm]` 用于"全部选完一次提交"。
+  //
+  // ★ 刻意**不** dispatch consumed：后端在我改掉"resolve 自动签契约"之后，
+  //   会在**同一次调用里重开闸门**并推来带 `clarify`（已剔除刚答那条）的新 gate 事件，
+  //   那份事件会替换 gateContext/gateAction。这里若先 consumed，对话框会闪一下再重开——
+  //   正是用户报的"点一下就关闭了"。所以保持打开、交给后端推来的新事件刷新。
   const doResolve = (cid, answer, batch) => {
     const text = batch || `${cid}=${answer}`
-    api.postControl(state.sessionId, 'resolve', text).catch((e) =>
-      dispatch({ type: 'error', message: e.message }))
-    dispatch({ type: 'consumed' })
+    api.postControl(state.sessionId, 'resolve', text).catch((e) => {
+      dispatch({ type: 'error', message: e.message })
+      dispatch({ type: 'consumed' })
+    })
   }
   const doPause = () => {
     api.postControl(state.sessionId, 'pause').catch((e) =>

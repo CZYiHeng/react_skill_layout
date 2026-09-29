@@ -2876,6 +2876,132 @@ def check_requirements_flow(base_dir: Path) -> list[str]:
         if a2.get("C1") != "a2":
             failures.append(f"单条 resolve 形式失效：{a2}")
 
+        # 6d) ★★ 答一条歧义**绝不许自动确认契约**，且闸门要**重开**让人接着答。
+        #     真实事故（用户原话"点一下就关闭了"）：点一个选项 → 落盘 C1 → 代码漏到
+        #     下面的 `confirm_spec` → 整份契约被签 → return None → 对话框关闭，
+        #     剩下的 C3/C4 再没机会回答（事后 spec：C1/C2 有答案、C3/C4 空白、confirmed=true）。
+        reentry_wd = Path(td) / "reentry"
+        reentry_wd.mkdir()
+        rsp = canonical_spec_path(reentry_wd)
+        rsp.parent.mkdir(parents=True, exist_ok=True)
+        rsp.write_text(json.dumps({
+            "schema_version": 1, "confirmed": False, "goal": "g",
+            "unit": [{"id": "R1", "statement": "s"}],
+            "clarify": [
+                {"id": f"C{i}", "question": f"q{i}", "options": ["a", "b"],
+                 "blocks": ["R1"]} for i in range(1, 4)
+            ],
+        }, ensure_ascii=False), encoding="utf-8")
+        seen: list[list[str]] = []       # 每轮闸门看到的待定歧义 id
+
+        def _reentry_gate(a, r="", c=None):
+            ids = [x["id"] for x in ((c or {}).get("clarify") or [])]
+            seen.append(ids)
+            if "C1" in ids:
+                return ("resolve", "C1=a")     # 第一轮：只答 C1
+            if "C2" in ids:
+                return ("resolve", "C2=b")     # 第二轮：再答 C2
+            return ("resolve", "C3=a;;[confirm]")   # 第三轮：答完并确认
+
+        rloop = mk_loop(reentry_wd, gate=_reentry_gate)
+        rres = rloop._requirements_gate()
+        if len(seen) != 3:
+            failures.append(
+                f"答一条歧义后闸门没有重开（闸门轮次={len(seen)}，应为 3）——"
+                "对话框会关闭，剩下的条目没机会答")
+        if seen and seen[0] != ["C1", "C2", "C3"]:
+            failures.append(f"首次闸门看到的待定歧义不对：{seen[:1]}")
+        if len(seen) > 1 and "C1" in seen[1]:
+            failures.append("重开后已答的 C1 仍在待定列表里（应已剔除）")
+        if rres is not None:
+            failures.append("三轮答完并确认后仍被拦")
+        rdata = json.loads(rsp.read_text(encoding="utf-8"))
+        if rdata.get("confirmed") is not True:
+            failures.append("三轮答完并带 [confirm] 后契约没被确认")
+        answers = {c["id"]: c.get("answer") for c in rdata.get("clarify", [])}
+        if answers != {"C1": "a", "C2": "b", "C3": "a"}:
+            failures.append(f"三条歧义的答案没有全部落盘：{answers}")
+
+        # 6e) ★ 只答一条、**不带 [confirm]** → 绝不能确认契约（事故的核心断言）
+        one_wd = Path(td) / "oneresolve"
+        one_wd.mkdir()
+        osp = canonical_spec_path(one_wd)
+        osp.parent.mkdir(parents=True, exist_ok=True)
+        osp.write_text(json.dumps({
+            "schema_version": 1, "confirmed": False, "goal": "g",
+            "unit": [{"id": "R1", "statement": "s"}],
+            "clarify": [
+                {"id": "C1", "question": "q1", "options": ["a", "b"], "blocks": ["R1"]},
+                {"id": "C2", "question": "q2", "options": ["a", "b"], "blocks": ["R1"]},
+            ],
+        }, ensure_ascii=False), encoding="utf-8")
+
+        def _one_then_abort(a, r="", c=None):
+            ids = [x["id"] for x in ((c or {}).get("clarify") or [])]
+            if "C1" in ids:
+                return ("resolve", "C1=a")
+            return ("abort", None)     # 让人在 C2 上中止
+
+        oloop = mk_loop(one_wd, gate=_one_then_abort)
+        ores = oloop._requirements_gate()
+        odata = json.loads(osp.read_text(encoding="utf-8"))
+        if odata.get("confirmed") is True:
+            failures.append(
+                "只有一条歧义被回答（未带 [confirm]）时契约被自动确认了")
+        if getattr(ores, "status", "") != "aborted":
+            failures.append(f"应停在第二条歧义上等中止，实际 {getattr(ores, 'status', '')!r}")
+
+        # 6d2) ★ 前端两处必须与后端一致（否则"点一下就关闭"会以另一种形式回来）：
+        #   · 未选完时确认按钮**按不动**（disabled 要含 unresolvedCount > 0）；
+        #   · doResolve **不能**再无条件 dispatch consumed——后端现在会在同一次调用里
+        #     重开闸门并推来新 gate 事件，先 consumed 就会闪一下再开。
+        gate_src_now = (base_dir / "web" / "src" / "components" / "GateBar.jsx").read_text(
+            encoding="utf-8")
+        if "disabled={submitting || unresolvedCount > 0}" not in gate_src_now:
+            failures.append("确认按钮未选完时也可点（应 disabled 含 unresolvedCount > 0）")
+        # ⚠️ 用**测试文件自身位置**推导仓库根，不要用 base_dir：
+        #    某些调用路径下 base_dir 指向别处（甚至临时副本），于是 `app_now` 里
+        #    根本没有 doResolve，条件块不进入 → 断言静默通过。
+        #    （本断言在这里连假通过 4 次，全是这个原因。）
+        repo_root = Path(__file__).resolve().parent.parent
+        app_now = (repo_root / "web" / "src" / "App.jsx").read_text(encoding="utf-8")
+        if "const doResolve" not in app_now:
+            failures.append(
+                f"读不到含 doResolve 的 App.jsx（{repo_root}）——断言无法生效，先修路径")
+        else:
+            # 取「doResolve → 下一个 const doPause」的片段，再**按花括号深度**判断
+            # `consumed` 是否在 `catch` 的块**内**。
+            # ⚠️ 不能用字符顺序：`i_consumed < i_catch` 这种比较分不出
+            #    "在 catch 块里" 与 "在 catch 块之后"——两者都排在 `catch` 这个词之后。
+            #    （本断言在这上面假通过 5 次，这是根本原因。）
+            seg = app_now[app_now.index("const doResolve"):]
+            if "const doPause" in seg:
+                seg = seg[:seg.index("const doPause")]
+            i_catch = seg.find("catch")
+            i_consumed = seg.find("consumed")
+            if i_consumed == -1:
+                failures.append("doResolve 里没有 consumed（出错时会一直卡在提交中）")
+            elif i_catch == -1:
+                failures.append("doResolve 里没有 catch（失败没有兜底）")
+            else:
+                # 从 catch 之后开始数括号：深度回到 0 即 catch 块结束
+                depth = 0
+                started = False
+                brace_end = len(seg)
+                for pos in range(i_catch, len(seg)):
+                    ch = seg[pos]
+                    if ch == "{":
+                        depth += 1
+                        started = True
+                    elif ch == "}":
+                        depth -= 1
+                        if started and depth == 0:
+                            brace_end = pos
+                            break
+                if not (i_catch < i_consumed < brace_end):
+                    failures.append(
+                        "doResolve 在 catch 块之外关闭闸门（点一下就关的老行为）")
+
         # 6c) ★ 未决歧义一律不许确认（真实事故）。
         #     契约声明 4 条歧义，用户只答了 2 条（C1/C2），点"确认契约并开始"
         #     就把 spec 签成了 `confirmed: true`，剩下两条由模型自己猜——
