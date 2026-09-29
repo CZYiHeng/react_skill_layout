@@ -23,6 +23,7 @@ const SECTIONS = [
 export default function SettingsModal({
   onClose, onSaved, allowOutside: currentAllowOutside, inline,
   workDir: currentWorkDir, gateMode: currentGateMode,
+  capability: currentCapability, capabilities: availableCapabilities,
 }) {
   const [form, setForm] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -247,9 +248,30 @@ export default function SettingsModal({
   const loopSection = (
     <>
       <small style={{ display: 'block', marginBottom: 10, color: 'var(--muted)' }}>
-        「闸门档位」显示的是<strong>当前生效值</strong>（与左侧栏同一个来源）；
+        「闸门档位」与「能力」显示的是<strong>当前生效值</strong>（与左侧栏/会话同一个来源）；
         其余循环参数来自配置文件。
       </small>
+      <label className="set-field">
+        <span>能力</span>
+        <select
+          value={currentCapability?.name || 'default'}
+          onChange={(e) => set('active_capability', e.target.value)}
+        >
+          {(availableCapabilities || [{ name: 'default', description: '仓库内置' }]).map((c) => (
+            <option key={c.name} value={c.name}>
+              {c.name}
+              {c.version ? ` v${c.version}` : ''}
+              {c.conventions ? `（${c.conventions} 条约定）` : ''}
+              {c.complete === false ? '（缺槽位）' : ''}
+            </option>
+          ))}
+        </select>
+        <small style={{ color: 'var(--muted)' }}>
+          {currentCapability?.description
+            || '能力包 = 五份 SKILL.md + capability.json（技术栈与验收标准）。换能力即换整套阶段行为。'}
+          {currentCapability?.source ? ` · 来源：${currentCapability.source}` : ''}
+        </small>
+      </label>
       <label className="set-field">
         <span>闸门档位</span>
         <select value={form?.gate_mode ?? 'auto'} onChange={(e) => set('gate_mode', e.target.value)}>

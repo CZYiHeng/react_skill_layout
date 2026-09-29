@@ -111,6 +111,9 @@ export function normalizeConfig(full) {
   if (!('sandbox' in cfg)) cfg.sandbox = !!cfg.sandbox_shell
   cfg.providers = providersOf(cfg)
   cfg.active_provider = cfg.active_provider || cfg.active_profile || ''
+  // 生效能力名：没配置时后端按 `default` 解析，前端也归一成同一个值，
+  // 免得下拉显示空、而后端其实跑着某个能力（"不知道在跑哪套"正是这样来的）
+  cfg.active_capability = cfg.active_capability || 'default'
   return cfg
 }
 

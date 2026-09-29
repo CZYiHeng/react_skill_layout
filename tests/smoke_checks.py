@@ -1766,6 +1766,59 @@ def check_executor_boundary(base_dir: Path) -> list[str]:
     return failures
 
 
+def check_capability_exposure(base_dir: Path) -> list[str]:
+    """能力必须能在界面上被选中——否则用户永远只能跑内置的 `default`。
+
+    真实后果：`active_capability` 只做了后端，界面上没有入口，于是两次真实运行
+    都跑在 `default` 上（没有 conventions、没有台账），而用户以为在用 `coding`。
+    "换了能力却没生效"这种事，必须有断言兜住。
+    """
+    import json
+    import tempfile
+
+    from react.capability import list_capabilities
+    from react.config import DEFAULTS
+
+    failures: list[str] = []
+    cfg = dict(DEFAULTS)
+    caps = list_capabilities(cfg, base_dir)
+    names = [c["name"] for c in caps]
+    if "default" not in names:
+        failures.append("能力清单缺少内置的 default（它是「什么都不用」的默认项）")
+    if "coding" not in names:
+        failures.append("能力清单缺少仓库自带的 coding")
+    for c in caps:
+        for key in ("name", "description", "complete", "conventions", "source"):
+            if key not in c:
+                failures.append(f"能力清单项缺少字段 {key}：{c}")
+    # coding 应带约定（它是"技术栈 + 验收标准"的载体）
+    coding = next((c for c in caps if c["name"] == "coding"), None)
+    if coding and not coding["conventions"]:
+        failures.append("coding 能力的 conventions 数为 0（约定没被读出）")
+
+    # 配置面：active_capability 必须可写（否则界面选了也存不下来）
+    from react.webapi import CONFIG_FIELDS
+    if "active_capability" not in CONFIG_FIELDS:
+        failures.append("CONFIG_FIELDS 缺少 active_capability（界面无法保存能力选择）")
+
+    # 非法能力名 → **报错并列出可用项**（刻意不静默回退：配置里拼错名字必须立刻知道，
+    # 回退成 default 会让人以为在用 coding）。界面侧靠"下拉只列可用能力"来避免误选。
+    from react.config import ConfigError
+    from react.service import ReactService
+
+    with tempfile.TemporaryDirectory() as td:
+        sb = Path(td)
+        import shutil as _sh
+        _sh.copytree(base_dir / "skills", sb / "skills")
+        try:
+            ReactService(dict(cfg, active_capability="no-such-cap"), sb).build_registry()
+            failures.append("非法能力名应报错（静默回退会让人以为在用自己的能力）")
+        except ConfigError as e:
+            if "coding" not in str(e) and "default" not in str(e):
+                failures.append(f"非法能力名的报错未列出可用项：{e}")
+    return failures
+
+
 def check_tool_window() -> list[str]:
     """窗口化不得切出孤儿 tool 消息（否则 API 直接 400）。
 

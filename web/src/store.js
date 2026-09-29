@@ -9,6 +9,8 @@ export const initialState = {
   binds: null, // { think: bool, plan: bool, ... }
   variants: null, // { think: ['default', ...], ... } 每槽位可选 skill 变体
   activeVariants: null, // { think: 'default', ... } 每槽位当前生效的变体
+  capability: null, // { name, version, description, conventions, ... } 当前生效能力
+  capabilities: null, // [{name, version, description, ...}] 可用能力清单
   status: 'idle', // idle | running | done | error | aborted
   items: [], // 已定稿条目
   live: null, // { action, text } 正在流式输出
@@ -41,6 +43,8 @@ export function reducer(state, action) {
         binds: action.binds || null,
         variants: action.variants || null,
         activeVariants: action.skill_variants || null,
+        capability: action.capability || null,
+        capabilities: action.capabilities || null,
         gateMode: mode,
         workDir: (action.config && action.config.work_dir) || state.workDir,
         allowOutside: action.config

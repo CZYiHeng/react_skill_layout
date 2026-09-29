@@ -115,7 +115,8 @@ export default function App() {
           if (cancelled) return
           dispatch({ type: 'session', sessionId: data.session_id,
                      config: api.normalizeConfig(data.config), binds: data.binds,
-                     variants: data.variants, skill_variants: data.skill_variants })
+                     variants: data.variants, skill_variants: data.skill_variants,
+                     capability: data.capability, capabilities: data.capabilities })
           // 补拉全量配置（含 providers/active_provider），保证模型下拉与变体选择完整
           const d = await api.getConfig()
           if (cancelled) return
@@ -502,7 +503,8 @@ export default function App() {
         </main>
 
         <div className={view === 'settings' ? 'host-pane' : 'host-pane pane-hidden'}>
-          <SettingsModal inline allowOutside={state.allowOutside} workDir={state.workDir} gateMode={state.gateMode} onSaved={() => {
+          <SettingsModal inline allowOutside={state.allowOutside} workDir={state.workDir} gateMode={state.gateMode}
+            capability={state.capability} capabilities={state.capabilities} onSaved={() => {
             api.getConfig().then((d) => {
               dispatch({ type: 'config_update', config: api.normalizeConfig(d.config || {}) })
             }).catch(() => {})
@@ -553,6 +555,8 @@ export default function App() {
           allowOutside={state.allowOutside}
           workDir={state.workDir}
           gateMode={state.gateMode}
+          capability={state.capability}
+          capabilities={state.capabilities}
           onClose={() => {}}
           onSaved={() => {
             // 配置已写回文件：只更新 config 相关字段，不动 items/live/awaiting

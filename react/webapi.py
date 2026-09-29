@@ -33,6 +33,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from .action import ACTION_NAMES
+from .capability import list_capabilities
 from .config import (PROVIDER_FIELDS, ConfigError, active_provider_name,
                      load_config, normalize_providers, resolve_config_path,
                      resolve_provider)
@@ -175,6 +176,17 @@ async def api_session(request: Request) -> JSONResponse:
         "skill_variants": {n: registry.get(n).active_variant for n in ACTION_NAMES},
         "variants": {n: registry.variants_of(n) for n in ACTION_NAMES},
         "warnings": list(getattr(registry, "warnings", [])),
+        # 生效能力 + 可用能力清单：没有这一项，界面上就无法选择能力，
+        # 用户只能跑内置的 default，而"换了能力却没生效"是无从察觉的。
+        "capability": {
+            "name": svc.capability.name,
+            "version": svc.capability.version,
+            "description": svc.capability.description,
+            "complete": svc.capability.complete,
+            "conventions": len(svc.capability.conventions),
+            "source": svc.capability.source,
+        },
+        "capabilities": list_capabilities(cfg, BASE_DIR),
         "config": {
             # model 取**生效 provider** 的，不再是顶层字段——多 provider 时
             # 顶层那份可能是空占位，前端显示的就是错的

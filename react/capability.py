@@ -355,6 +355,37 @@ def resolve_capability(cfg: dict, base_dir: Path, ref: str | Path | None = None,
     )
 
 
+def list_capabilities(cfg: dict, base_dir: Path,
+                      current_version: str = "") -> list[dict]:
+    """供界面/CLI 展示的可用能力清单（含内置的 `default`）。
+
+    `discover()` 只返回**具名目录**里的能力；`default`（`<base>/skills`）是内置的、
+    不在那些目录里，所以这里显式补上——否则界面下拉里会缺掉"什么都不用"的那个默认项。
+    """
+    caps, _ = discover(cfg, base_dir, current_version)
+    out = [{
+        "name": DEFAULT_CAPABILITY,
+        "version": "",
+        "description": "仓库内置的通用五阶段 skill（不做领域特化）",
+        "provided": list(ACTION_NAMES),
+        "complete": True,
+        "conventions": 0,
+        "source": str((Path(base_dir) / "skills")),
+    }]
+    for name in sorted(caps):
+        c = caps[name]
+        out.append({
+            "name": c.name,
+            "version": c.version,
+            "description": c.description,
+            "provided": list(c.provided),
+            "complete": c.complete,
+            "conventions": len(c.conventions),
+            "source": str(c.root),
+        })
+    return out
+
+
 def describe(caps: dict[str, Capability]) -> list[str]:
     """给 --check / 日志用的能力清单。"""
     out = []
