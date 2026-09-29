@@ -1531,7 +1531,8 @@ def check_gate_mode() -> list[str]:
     if loop._should_gate("observe", "通过") or loop._should_gate("verify"):
         failures.append("gate=None 时不应拦人")
 
-    loop.gate = lambda a, r="": ("continue", None)
+    # 闸门回调现在是 (action, reason, context)：第三参是**判断依据**
+    loop.gate = lambda a, r="", c=None: ("continue", None)
 
     # plan 档（默认）：计划拦一次，步骤通过不拦，缺陷/验收必拦
     loop.gate_mode = "plan"
@@ -1608,7 +1609,7 @@ def check_interrupt() -> list[str]:
     loop._aborted = False
     loop.context = SessionContext()
     gates: list[tuple[str, str]] = []
-    loop.gate = lambda a, r="": (gates.append((a, r)), ("continue", None))[1]
+    loop.gate = lambda a, r="", c=None: (gates.append((a, r)), ("continue", None))[1]
 
     loop.interrupt = lambda: ("pause", None)
     loop._check_interrupt()
@@ -2413,6 +2414,171 @@ def check_clarification_gate(base_dir: Path) -> list[str]:
             failures.append("普通判据被误判为不可逆")
         if victim.is_file():
             victim.unlink()
+    return failures
+
+
+def check_gate_evidence(base_dir: Path) -> list[str]:
+    """闸门必须带上**判断依据**，不能只问"需要你指示"。
+
+    真实由来：OBSERVE 判「缺陷」时前端只显示 `OBSERVE 判定「缺陷」，需要你指示`
+    （`_gate_reason` 丢掉了条件），用户被要求在"继续/纠偏/中止"之间选，**却看不到缺陷是什么**。
+    而缺陷说明其实已经算出来了——`obs_out.parsed` 就在同一段代码里拿去填 `self.feedback` 了，
+    只是没接到闸门上。同一个模式在一次真实运行里连问两次。
+
+    本断言盯三件事：
+      · 闸门回调收到 context，且缺陷原文在里面；
+      · 能从缺陷说明里**机械提取**建议修法与涉及的需求编号；
+      · 缺陷为空（正常通过）时不硬塞 context。
+    """
+    from react.loop import (_extract_requirements_mentioned, _extract_suggestion)
+
+    failures: list[str] = []
+
+    # 建议修法：只认显式标注的那几行
+    for text, want in (
+        ("缺陷说明：漏了 --dry-run\n建议：在 main 里加 dry_run 分支", "在 main 里加 dry_run 分支"),
+        ("[建议] 把解析移到 core.py", "把解析移到 core.py"),
+        ("修复建议：补一个 test_no_write 用例", "补一个 test_no_write 用例"),
+        ("缺陷说明：R2 没实现", ""),            # 没标建议 → 不许编
+        ("", ""),
+    ):
+        got = _extract_suggestion(text)
+        if got != want:
+            failures.append(f"建议提取不对：{text[:24]!r} → {got!r}（应为 {want!r}）")
+
+    # 涉及需求：去重、保持出现顺序、只认 R<数字>
+    for text, want in (
+        ("R1 和 R3 未覆盖", ["R1", "R3"]),
+        ("R2 有问题，R2 又出现一次", ["R2"]),
+        ("R3,R1,R2", ["R3", "R1", "R2"]),
+        ("没有编号", []),
+        ("", []),
+    ):
+        got = _extract_requirements_mentioned(text)
+        if got != want:
+            failures.append(f"需求编号提取不对：{text[:24]!r} → {got}（应为 {want}）")
+
+    # 闸门回调必须真的收到带缺陷的 context
+    captured: list[tuple] = []
+    loop = ReActLoop.__new__(ReActLoop)
+    loop.gate = lambda a, r="", c=None: (captured.append((a, r, c)), ("continue", None))[1]
+    loop.gate_mode = "plan"
+    loop.context = None  # 该分支不用
+    loop._apply_gate("observe", "OBSERVE 判定「缺陷」，需要你指示",
+                     context={"defect": "R2 没实现", "attempt": 1, "attempt_limit": 3,
+                              "suggestion": "补 test_no_write", "last_steer": "注意边界",
+                              "step": 2, "total_steps": 5,
+                              "blocked_requirements": ["R2"]})
+    if not captured:
+        failures.append("闸门回调没被调用")
+    else:
+        _a, _r, ctx = captured[0]
+        if not isinstance(ctx, dict):
+            failures.append(f"闸门第三参应为 dict（判断依据），实际 {type(ctx).__name__}")
+        else:
+            if ctx.get("defect") != "R2 没实现":
+                failures.append("闸门 context 里没有缺陷原文（用户看不到哪里坏了）")
+            for k in ("attempt", "attempt_limit", "suggestion", "blocked_requirements",
+                      "step", "total_steps", "last_steer"):
+                if k not in ctx:
+                    failures.append(f"闸门 context 缺 {k}（用户无法判断选哪条路）")
+
+    # 契约：Gate 类型与 ControlChannel/QueueControl 的签名都要能接受第三参
+    import inspect
+    from react.service import AutoControl, CliControl, ControlChannel, QueueControl
+    for cls in (ControlChannel, AutoControl, CliControl, QueueControl):
+        params = list(inspect.signature(cls.wait_gate).parameters)
+        if "context" not in params:
+            failures.append(f"{cls.__name__}.wait_gate 缺 context 参数（闸门收不到依据）")
+
+    # ★ 端到端一段：真的跑一次 `_step_observe`（Mock 首次核对故意判缺陷），
+    #   确认**闸门收到的 context 里就是那次判定的内容**。
+    #   前面几段只验证了"转发正确"，没验证"缺陷真的被填进去了"——破坏填补逻辑时
+    #   那几段不会变红（这正是本断言一开始的盲区）。
+    from react.action import ActionRegistry as _AR
+    from react.context import SessionContext as _SC
+    from react.model import MockClient
+    from react.render import RichRenderer
+
+    seen: list[dict] = []
+    reg = _AR()
+    reg.load(base_dir / "capabilities" / "coding")
+    ctx = _SC(max_rounds=5)
+    ctx.add_user("测试任务")
+    mock = MockClient(observe_defect_once=True)
+    # 给缺陷原文装上"建议修法"与"涉及需求编号"——Mock 默认 reason 里没有这两样，
+    # 不装的话真实路径下这两个字段本来就该为空，破坏提取逻辑断言也不会变红（那正是盲区）。
+    # 这里只改缺陷原文，其余流程仍是真实 Mock。
+    _orig_complete = mock.complete
+
+    def _rich_defect(messages, on_token=None, tools=None):
+        resp = _orig_complete(messages, on_token, tools)
+        # 缺陷文本走的是 `resp.text`（`out.parsed` 的来源），verdict 走 tool_calls 的
+        # arguments——**两份都要改**，否则闸门拿到的 defect 与 verdict 不同源（真实模型
+        # 会保持一致，测试也必须一致）。
+        new_reason = ("产物缺少关键内容 X：R2 没有实现，R3 也缺。\n"
+                      "建议：在 core.py 里补 --delete 分支并加测试")
+        changed = False
+        for tc in (getattr(resp, "tool_calls", None) or []):
+            fn = (tc.get("function") or {}) if isinstance(tc, dict) else {}
+            if fn.get("name") != "submit_verdict":
+                continue
+            import json as _j
+            args = fn.get("arguments") or "{}"
+            try:
+                parsed = _j.loads(args) if isinstance(args, str) else dict(args)
+            except (ValueError, TypeError):
+                continue
+            if parsed.get("verdict") in ("defect", "缺陷", "不通过"):
+                parsed["reason"] = new_reason
+                fn["arguments"] = _j.dumps(parsed, ensure_ascii=False)
+                changed = True
+        if changed:
+            try:
+                resp.text = f"[OBSERVATION] 缺陷：{new_reason}。"
+            except (AttributeError, TypeError):
+                pass
+        return resp
+
+    mock.complete = _rich_defect
+    loop = ReActLoop(
+        reg, ctx, mock, RichRenderer(None, show_reasoning=False),
+        gate=lambda a, r="", c=None: (seen.append(c or {}), ("continue", None))[1],
+        # Mock 靠 `"冒烟回答" in history` 判断"已经问过了"（见 react/model.py）——
+        # 答案必须含这四个字，否则它会一直停在 ASK，永远进不了 ACT/OBSERVE。
+        ask=lambda q: "冒烟回答：输入已确认")
+    try:
+        # 走公开入口（`_round_rest` 需要先有 ACT 产物，单独调它进不去）。
+        # MockClient(observe_defect_once=True) 会让首次 OBSERVE 判缺陷，正是要测的情形。
+        loop.run("测试任务：写一个 hello 脚本")
+    except Exception as e:  # noqa: BLE001 - 组装失败本身就是缺陷
+        failures.append(f"run() 跑不起来：{type(e).__name__}: {e}")
+    if not seen:
+        failures.append("OBSERVE 判缺陷时闸门没被调用（缺陷不会被展示）")
+    else:
+        # 找那次判缺陷的闸门（run() 里可能有多次）
+        c = next((x for x in seen if str(x.get("defect") or "").strip()), None)
+        if c is None:
+            failures.append("闸门 context 的 defect 全为空（缺陷原文没接上）")
+        else:
+            defect = str(c.get("defect") or "")
+            if "缺少关键内容" not in defect:
+                failures.append(f"defect 不是那次判定的原文：{defect[:50]!r}")
+            if c.get("verdict") not in ("缺陷", "不通过"):
+                failures.append(f"闸门 context 的 verdict 不对：{c.get('verdict')!r}")
+            # ★ 建议修法与涉及需求必须**真的从缺陷原文里提取出来**（不是恒空）
+            sug = str(c.get("suggestion") or "").strip()
+            if not sug:
+                failures.append("缺陷里写了「建议：」，闸门却没提取出建议修法")
+            elif "补 --delete 分支" not in sug:
+                failures.append(f"建议提取不准：{sug!r}")
+            got_reqs = c.get("blocked_requirements") or []
+            if got_reqs != ["R2", "R3"]:
+                failures.append(f"缺陷里点了 R2/R3，闸门提取到 {got_reqs}")
+            for k in ("step", "attempt", "attempt_limit", "last_steer",
+                      "criteria", "step_goal"):
+                if k not in c:
+                    failures.append(f"闸门 context（真实路径）缺 {k}")
     return failures
 
 

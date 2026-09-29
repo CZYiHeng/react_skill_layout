@@ -367,7 +367,41 @@ def render_tool_text(action: str, name: str, args: dict | None) -> str:
 # ---- 渲染与人工交互的抽象接口（由调用方注入实现；协议见 render.py） ----
 
 # gate 返回：("continue", None) | ("abort", None) | ("steer", 纠偏文本)
-Gate = Callable[[str], tuple[str, str | None]]
+#: 闸门回调：`(action, reason, context) -> (cmd, correction)`。
+#: `context` 是**判断依据**（缺陷原文、尝试次数、上轮纠偏…）——只给一个"需要你指示"
+#: 等于让人在不知道缺陷是什么的情况下选"继续/纠偏/中止"。真实运行里连问两次的都是这个。
+Gate = Callable[..., tuple[str, str | None]]
+
+#: 从缺陷说明里挑出"建议修法"。OBSERVE 的 verdict 载荷里若写了
+#: `[建议]` / `建议：` / `修复建议` 段，就取出来给用户当**可一键采纳**的动作。
+_SUGGESTION_RE = re.compile(
+    r"^\s*(?:\[建议\]|建议[:：]|修复建议[:：]|修改建议[:：])\s*(.+)$", re.M)
+#: 缺陷说明里提到的需求编号（`R1` / `R1,R3` / `R1 R3`）——用来告诉用户"卡住了哪些需求"
+_REQ_IN_TEXT_RE = re.compile(r"\bR(\d{1,3})\b")
+
+
+def _extract_suggestion(text: str) -> str:
+    """从缺陷说明里取"建议修法"；没有则返回空串。
+
+    只做**机械提取**，不生成建议——建议必须来自 OBSERVE 自己的判定，
+    框架替它编一个修法等于绕过判定。
+    """
+    if not text:
+        return ""
+    m = _SUGGESTION_RE.search(text)
+    return m.group(1).strip() if m else ""
+
+
+def _extract_requirements_mentioned(text: str) -> list[str]:
+    """缺陷说明里点到的需求编号（去重、保持出现顺序）。"""
+    if not text:
+        return []
+    seen: list[str] = []
+    for m in _REQ_IN_TEXT_RE.finditer(text):
+        rid = f"R{int(m.group(1))}"
+        if rid not in seen:
+            seen.append(rid)
+    return seen
 # ask 返回用户回答；返回 None 表示提问被中断（按中止处理）
 Ask = Callable[[str], str | None]
 
@@ -486,6 +520,10 @@ class ReActLoop:
         self.force_plan = False
         self.feedback = ""
         self.last_act_result = ""
+        #: 上一轮人工纠偏的内容（下发给闸门，让用户看到"上次你说了什么"）
+        self._last_steer = ""
+        #: 本任务内各类闸门被拦下的次数（GateBar 显示"本次第 N 次"）
+        self.gate_counts: dict[str, int] = {}
 
         while self.context.round_no < self.context.max_rounds:
             self.context.round_no += 1
@@ -721,8 +759,25 @@ class ReActLoop:
                 self._misses = 0
                 self.feedback = ""
 
-        # 步骤收尾闸门：step 档每步拦一次，auto 档仅在判缺陷/不通过时拦
-        self._apply_gate_if_needed("observe", verdict)
+        # 步骤收尾闸门：step 档每步拦一次，auto 档仅在判缺陷/不通过时拦。
+        # ★ 把**缺陷原文**一起下发：只给一个「需要你指示」等于让人在不知道缺陷是什么的
+        #   情况下选"继续/纠偏/中止"。真实运行里连问两次的都是这个——判断依据就在手边
+        #   （`obs_out.parsed` 就是缺陷说明，已经拿去填 `self.feedback` 了），却没接上来。
+        gate_ctx = {
+            "verdict": verdict,
+            "step": self.context.plan_index + 1,
+            "total_steps": len(self.context.plan) or None,
+            "attempt": self._misses,
+            "attempt_limit": _MISS_LIMIT,
+            "defect": obs_out.parsed if verdict in ("缺陷", "不通过") else "",
+            "suggestion": _extract_suggestion(obs_out.parsed),
+            "blocked_requirements": _extract_requirements_mentioned(obs_out.parsed),
+            "last_steer": self._last_steer,
+            "step_goal": (self.context.plan[self.context.plan_index][0]
+                          if not self.context.plan_done else ""),
+            "criteria": self.context.current_criteria(),
+        }
+        self._apply_gate_if_needed("observe", verdict, context=gate_ctx)
 
     # ------------------------------------------------------------------
     # VERIFY：收尾前终检
@@ -813,28 +868,37 @@ class ReActLoop:
             self._apply_gate("interrupt", reason="你按了暂停")
 
     def _apply_gate_if_needed(self, action: str, verdict: str | None = None,
-                              reason: str = "") -> bool:
+                              reason: str = "", context: dict | None = None) -> bool:
         """按档位决定是否拦人；返回 True 表示人工做了纠偏。
 
         phase 档位已在 _step 内拦过，此处不再重复拦。
+        `context` 是**判断依据**，随闸门一起下发（缺陷原文、尝试次数、上轮纠偏）。
         """
         if self.gate is None or self._is_phase_mode():
             return False
         if not self._should_gate(action, verdict):
             return False
         before = len(self.context.messages)
-        self._apply_gate(action, reason or self._gate_reason(action, verdict))
+        self._apply_gate(action, reason or self._gate_reason(action, verdict),
+                         context=context)
         return len(self.context.messages) > before or self._aborted
 
-    def _apply_gate(self, action_name: str, reason: str = "") -> None:
-        """非 ASK 步骤后的人工步进控制：c 继续 / s 纠偏 / q 中止。"""
+    def _apply_gate(self, action_name: str, reason: str = "",
+                    context: dict | None = None) -> None:
+        """非 ASK 步骤后的人工步进控制：c 继续 / s 纠偏 / q 中止。
+
+        `context` 带着**判断依据**下发前端。没有它用户只能看到"需要你指示"——
+        不知道要指示什么，而这正是真实运行里连问两次的那种情况。
+        """
         if self.gate is None:
             return
-        cmd, correction = self.gate(action_name, reason)
+        cmd, correction = self.gate(action_name, reason, context or {})
         if cmd == "abort":
             self._aborted = True
         elif cmd == "steer" and correction:
             self.context.add_user(f"人工纠偏：{correction}")
+            # 记下来：下次闸门好告诉用户"上轮你纠偏说了什么、有没有用"
+            self._last_steer = correction
 
     # ------------------------------------------------------------------
     # 单步执行：组装消息 → 模型调用 → 渲染 → （可选）步进控制

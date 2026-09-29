@@ -158,7 +158,8 @@ class NullRenderer:
 class ControlChannel:
     """gate / ask 的统一抽象。默认行为 = 全自动（无人工介入）。"""
 
-    def wait_gate(self, action: str, reason: str = "") -> tuple[str, str | None]:
+    def wait_gate(self, action: str, reason: str = "",
+                  context: dict | None = None) -> tuple[str, str | None]:
         return (GATE_CONTINUE, None)
 
     def wait_answer(self, question: str) -> str | None:
@@ -192,7 +193,24 @@ class CliControl(ControlChannel):
         if self._console is not None:
             self._console.print(text)
 
-    def wait_gate(self, action: str, reason: str = "") -> tuple[str, str | None]:
+    def wait_gate(self, action: str, reason: str = "",
+                  context: dict | None = None) -> tuple[str, str | None]:
+        # CLI 也要把**判断依据**显示出来：只提示"需要你指示"等于让人盲选。
+        ctx = context or {}
+        defect = str(ctx.get("defect") or "").strip()
+        if defect:
+            self._say("[bold]缺陷说明[/bold]")
+            for line in defect.splitlines():
+                self._say(f"  {line}")
+        sug = str(ctx.get("suggestion") or "").strip()
+        if sug:
+            self._say(f"[yellow]建议修法[/yellow] {sug}"
+                      "（回车=继续让模型自己修；要采纳请用 s 把修法带上）")
+        blocked = ctx.get("blocked_requirements") or []
+        if blocked:
+            self._say(f"[dim]涉及需求：{','.join(blocked)}[/dim]")
+        if ctx.get("last_steer"):
+            self._say(f"[dim]上轮你的纠偏：{ctx['last_steer']}[/dim]")
         self._say(f"[dim][c]继续 · s <纠偏> · q 中止[/dim]"
                   + (f"  [dim]— {reason}[/dim]" if reason else ""))
         while True:
@@ -208,7 +226,10 @@ class CliControl(ControlChannel):
                 return (GATE_ABORT, None)
             if ans.startswith("s ") and len(ans) > 2:
                 return (GATE_STEER, ans[2:].strip())
-            self._say("[dim]输入 c / s <纠偏> / q[/dim]")
+            if ans == "s" and sug:
+                # 采纳 OBSERVE 自己给的修法——这是把"建议"变成一键动作
+                return (GATE_STEER, sug)
+            self._say("[dim]输入 c / s <纠偏> / s（采纳建议）/ q[/dim]")
 
     def wait_answer(self, question: str) -> str | None:
         try:
@@ -273,11 +294,13 @@ class QueueControl(ControlChannel):
         except queue.Empty:
             return (GATE_ABORT, None)  # 超时按中止处理，避免线程悬挂
 
-    def wait_gate(self, action: str, reason: str = "") -> tuple[str, str | None]:
+    def wait_gate(self, action: str, reason: str = "",
+                  context: dict | None = None) -> tuple[str, str | None]:
         if self._closed.is_set():
             return (GATE_ABORT, None)
         if self.on_gate_wait is not None:
-            self.on_gate_wait(action, reason)
+            # 把判断依据一并推给前端：GateBar 要显示缺陷原文与可采纳的建议
+            self.on_gate_wait(action, reason, context or {})
         cmd, text = self._get()
         if cmd == GATE_STEER:
             return (GATE_STEER, text or "")

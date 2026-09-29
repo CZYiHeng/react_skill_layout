@@ -530,6 +530,7 @@ export default function App() {
             <GateBar
               action={state.items.filter((i) => i.kind === 'step').slice(-1)[0]?.action}
               reason={state.gateReason}
+              context={state.gateContext}
               count={state.gateCount}
               onContinue={doContinue}
               onSteer={doSteer}

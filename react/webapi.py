@@ -166,8 +166,11 @@ async def api_session(request: Request) -> JSONResponse:
     sess.created = time.strftime("%Y-%m-%d %H:%M:%S")
     # 阻塞等 gate 时推事件，前端据此显示「继续 / 纠偏 / 中止」步进条
     # reason 告诉前端「为什么停在这里」（步骤完成 / 发现缺陷 / 最终验收）
-    sess.control.on_gate_wait = lambda action, reason="": sess.out.put(
-        AgentEvent("gate", action=action, payload={"reason": reason})
+    # context 是**判断依据**：缺陷原文、尝试次数、上轮纠偏、建议修法。
+    # 没有它，前端只能显示"需要你指示"——而用户不知道该指示什么（真实运行里发生过两次）。
+    sess.control.on_gate_wait = lambda action, reason="", context=None: sess.out.put(
+        AgentEvent("gate", action=action,
+                   payload={"reason": reason, "context": context or {}})
     )
     return JSONResponse({
         "session_id": sess.id,
