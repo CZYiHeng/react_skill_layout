@@ -1056,8 +1056,19 @@ class ReActLoop:
             for c in clarifications(data) if not c.resolved
         ]
 
-        if data.get("_broken") is None and spec.is_file() and is_confirmed(data) and not pending:
-            return None   # 已有确认过的契约且无未决歧义 → 放行
+        # 放行的**全部**条件：结构没坏 + 已确认 + 无未决歧义 +
+        # （没有不可逆判据，或人已授权不可逆验收）。
+        # 最后一项不能漏：`run_spec` 要求 require_confirmed=True 且不可逆护栏据此判定，
+        # 缺 `irreversible_ok` 就放行会让 agent 的验收被护栏挡住、只能靠 `--allow-irreversible` 绕。
+        _irrev = [
+            u.get("id") for u in (data.get("unit") or [])
+            if isinstance(u, dict) and isinstance(u.get("acceptance"), dict)
+            and u["acceptance"].get("irreversible")
+        ]
+        _irrev_ok = bool(data.get("irreversible_ok")) or not _irrev
+        if (data.get("_broken") is None and spec.is_file() and is_confirmed(data)
+                and not pending and _irrev_ok):
+            return None   # 已有确认过的契约、无未决歧义、不可逆已授权 → 放行
 
         # ★ 不产 spec 的能力（default）：**只告警一次就放行**，不要反复拦。
         #   需求闸门是能力无关的前置条件，但它要求的动作（调 submit_requirements、
@@ -1103,6 +1114,17 @@ class ReActLoop:
         reason = ("还没有已确认的需求契约（requirement-set）" if not spec.is_file()
                   else "需求契约尚未确认" if not is_confirmed(data)
                   else "仍有未解决的歧义")
+        # ★ 已确认但**没授权不可逆验收** → 仍要停下问一次。
+        #   为什么单独拦：`run_spec` 现在要求 `require_confirmed=True`，不可逆护栏因此真正生效；
+        #   而 `irreversible_ok` 只能由**人的确认动作**写入（`confirm_spec` 会记，
+        #   模型自己写会被 `write_spec_from_agent` 剥掉）。
+        #   历史 spec（在 `confirm_spec` 开始记录该字段之前确认的，例如 `G:\one`）
+        #   就缺这个字段——若不在这里补一次确认，agent 自己的验收会被护栏永久挡住，
+        #   于是只能靠 `--allow-irreversible` 绕过，反而更容易出事。
+        if (spec.is_file() and is_confirmed(data)
+                and not data.get("irreversible_ok") and ctx["irreversible"]
+                and not pending):
+            reason = "不可逆验收尚未授权"
         # 重入时不再需要（每次重入都从磁盘重建 ctx）
         cmd, text = self.gate("requirements", reason, ctx) if self.gate else ("continue", None)
 
@@ -1191,13 +1213,24 @@ class ReActLoop:
                 f"契约文件：{spec}\n"
                 "请人工确认后重跑，或改用交互式前端 / `--confirm-spec`。")
 
-        # 人工确认 → 把 spec 标为已确认，本次运行起按它验收
-        if spec.is_file() and not is_confirmed(data):
+        # 人工确认 → 把 spec 标为已确认（并在有不可逆判据时记下该项授权），
+        # 本次运行起按它验收。
+        # ⚠️ 条件不能写成 `not is_confirmed(data)`：历史 spec 可能**已确认但缺
+        #    `irreversible_ok`**（在 `confirm_spec` 开始记录该字段之前确认的，例如
+        #    `G:\one`）。那种情况下人这次点的"确认"就是补授权，必须走一遍——
+        #    否则闸门每轮都停在「不可逆验收尚未授权」而永远写不进授权。
+        _need_confirm = (
+            spec.is_file()
+            and (not is_confirmed(data)
+                 or (not data.get("irreversible_ok") and bool(_irrev)))
+        )
+        if _need_confirm:
             try:
                 from react.acceptance import confirm_spec
                 confirm_spec(spec)
                 self.context.add_user(
-                    f"人工已确认需求契约（{spec}）——后续实现与验收按它执行。")
+                    f"人工已确认需求契约（{spec}）——后续实现与验收按它执行。"
+                    + ("（含不可逆验收授权）" if _irrev else ""))
             except Exception as e:  # noqa: BLE001 - 确认失败不该静默
                 return LoopResult("escalated", self.context.round_no,
                                   f"需求契约确认失败：{e}")

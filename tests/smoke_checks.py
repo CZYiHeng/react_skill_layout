@@ -1881,7 +1881,110 @@ def check_acceptance_engine(base_dir: Path) -> list[str]:
             return p
 
         def spec_of(units: list[dict]) -> dict:
-            return {"schema_version": 1, "goal": "测试", "unit": units}
+            # `confirmed=True`：`run_spec` 现在**要求已确认**（并连带激活不可逆护栏）。
+            # 未确认时的拒绝行为由下面 A0 专门断言。
+            return {"schema_version": 1, "goal": "测试", "unit": units,
+                    "confirmed": True}
+
+        # A0 ★ `run_spec` 必须拒绝**未确认**的契约。
+        # 真实事故：`run_spec` 调 `load_spec(spec_path)` 没传 `require_confirmed`，
+        # 而默认是 False → "未确认不得进入实现"这条**全仓库从未生效**
+        # （没有任何调用点传过 True），连带**不可逆护栏也形同虚设**
+        # （其条件是 `if require_confirmed and not (...)`）。
+        # 实测：R4 声明 `irreversible: true` 仍被执行。
+        unconfirmed = write_spec({"schema_version": 1, "goal": "测试",
+                                  "unit": [
+                                      {"id": "R1", "statement": "能跑",
+                                       "acceptance": {
+                                           "kind": "command", "run": "python ok.py",
+                                           "expect": "exit_code == 0"}}]},
+                                 "a0.json")
+        try:
+            run_spec(unconfirmed, tmp)
+            failures.append("run_spec 放行了未确认的契约（未确认不得进入验收）")
+        except SpecError:
+            pass
+        # 不可逆判据：未获授权时不得执行
+        irrev_spec = write_spec({"schema_version": 1, "goal": "测试",
+                                 "confirmed": True,
+                                 "unit": [
+                                     {"id": "R1", "statement": "会删数据",
+                                      "acceptance": {
+                                          "kind": "command", "run": "python ok.py",
+                                          "expect": "exit_code == 0",
+                                          "irreversible": True}}]},
+                                "a0b.json")
+        try:
+            run_spec(irrev_spec, tmp)
+            failures.append("不可逆判据未经授权就被执行（护栏失效）")
+        except SpecError:
+            pass
+        # 显式授权后才放行
+        data_i, units_i, _ev_i = run_spec(irrev_spec, tmp, allow_irreversible=True)
+        if not units_i:
+            failures.append("显式授权不可逆后仍无法验收")
+
+        # A0b ★ 人工确认**必须记录不可逆授权**（否则 agent 的验收会被护栏永久挡住，
+        #     只能靠 `--allow-irreversible` 绕，反而更容易出事）。
+        from react.acceptance import confirm_spec as _confirm_spec
+        cspec = write_spec({"schema_version": 1, "goal": "测试", "unit": [
+            {"id": "R1", "statement": "会删数据",
+             "acceptance": {"kind": "command", "run": "python ok.py",
+                            "expect": "exit_code == 0", "irreversible": True}}]},
+            "a0c.json")
+        _confirm_spec(cspec)
+        cd = json.loads(cspec.read_text(encoding="utf-8"))
+        if cd.get("confirmed") is not True:
+            failures.append("确认后 confirmed 不是 true")
+        if cd.get("irreversible_ok") is not True:
+            failures.append("确认含不可逆判据的契约时没有记录 irreversible_ok")
+        # 记录后才允许验收
+        run_spec(cspec, tmp)
+        # 没有不可逆判据时不该写这个字段（不要无谓放宽）
+        nspec = write_spec({"schema_version": 1, "goal": "测试", "unit": [
+            {"id": "R1", "statement": "只读",
+             "acceptance": {"kind": "command", "run": "python ok.py",
+                            "expect": "exit_code == 0"}}]}, "a0d.json")
+        _confirm_spec(nspec)
+        if json.loads(nspec.read_text(encoding="utf-8")).get("irreversible_ok"):
+            failures.append("无不可逆判据的契约不该写 irreversible_ok")
+
+        #    真实事故：`run_spec` 调 `load_spec(spec_path)` 没传 `require_confirmed`，
+        #    而默认是 False → "未确认不得进入实现"这条**全仓库从未生效**
+        #    （没有任何调用点传过 True），连带**不可逆护栏也形同虚设**
+        #    （其条件是 `if require_confirmed and not (...)`）。
+        #    实测：R4 声明 `irreversible: true` 仍被执行。
+        unconfirmed = write_spec({"schema_version": 1, "goal": "测试",
+                                  "unit": [
+                                      {"id": "R1", "statement": "能跑",
+                                       "acceptance": {
+                                           "kind": "command", "run": "python ok.py",
+                                           "expect": "exit_code == 0"}}]},
+                                 "a0.json")
+        try:
+            run_spec(unconfirmed, tmp)
+            failures.append("run_spec 放行了未确认的契约（未确认不得进入验收）")
+        except SpecError:
+            pass
+        # 不可逆判据：未获授权时不得执行
+        irrev_spec = write_spec({"schema_version": 1, "goal": "测试",
+                                 "confirmed": True,
+                                 "unit": [
+                                     {"id": "R1", "statement": "会删数据",
+                                      "acceptance": {
+                                          "kind": "command", "run": "python ok.py",
+                                          "expect": "exit_code == 0",
+                                          "irreversible": True}}]},
+                                "a0b.json")
+        try:
+            run_spec(irrev_spec, tmp)
+            failures.append("不可逆判据未经授权就被执行（护栏失效）")
+        except SpecError:
+            pass
+        # 显式授权后才放行
+        data_i, units_i, _ev_i = run_spec(irrev_spec, tmp, allow_irreversible=True)
+        if not units_i:
+            failures.append("显式授权不可逆后仍无法验收")
 
         # A1 判据完整 → 全绿；覆盖表/回执/缺口都产出
         p = write_spec(spec_of([
@@ -2284,7 +2387,7 @@ def check_clarification_gate(base_dir: Path) -> list[str]:
 
         # 显式允许 → 可跑，但结论**必须**标出未决歧义
         _, units = load_spec(spec_p, require_confirmed=True, allow_unresolved=True)
-        _, units2, ev = run_spec(spec_p, w)
+        _, units2, ev = run_spec(spec_p, w, allow_unresolved=True)
         v = finalize(data, units2, ev, d)
         if not v.get("unresolved"):
             failures.append("允许绕过时结论未标出未决歧义（「通过」会被误信）")
@@ -3152,6 +3255,57 @@ def check_requirements_flow(base_dir: Path) -> list[str]:
         svc_src = (base_dir / "react" / "service.py").read_text(encoding="utf-8")
         if "gate_autonomous=control.autonomous" not in svc_src:
             failures.append("service 没有把 control.autonomous 透传进 loop（fail-closed 会失效）")
+
+        # 6g) ★ 已确认但**未授权不可逆**的 spec：闸门必须仍然拦，并在人确认时补写授权。
+        #     真事故：`run_spec` 曾不要求已确认 → 不可逆护栏（条件含 require_confirmed）
+        #     全仓库从未生效，R4 声明 `irreversible: true` 仍被执行。
+        #     修严之后，历史 spec（在 `confirm_spec` 开始记录该字段之前确认的，
+        #     例如 G:\one）会缺 `irreversible_ok` —— 闸门若因"已确认"直接放行，
+        #     agent 自己的验收就会被护栏永久挡住。
+        irrev_wd = Path(td) / "irrevgate"
+        irrev_wd.mkdir()
+        isp = canonical_spec_path(irrev_wd)
+        isp.parent.mkdir(parents=True, exist_ok=True)
+        isp.write_text(json.dumps({
+            "schema_version": 1, "confirmed": True, "goal": "g",
+            "unit": [{"id": "R1", "statement": "会删数据",
+                      "acceptance": {"kind": "command", "run": "true",
+                                     "expect": "exit_code == 0",
+                                     "irreversible": True}}],
+            "clarify": [],
+        }, ensure_ascii=False), encoding="utf-8")
+
+        def _irrev_gate(a, r="", c=None):
+            if a == "requirements":
+                seen_irrev_reason.append(r)
+            return ("continue", None)
+
+        seen_irrev_reason: list[str] = []
+        igate = mk_loop(irrev_wd, gate=_irrev_gate)
+        ires = igate._requirements_gate()
+        igd = json.loads(isp.read_text(encoding="utf-8"))
+        if igd.get("irreversible_ok") is not True:
+            failures.append(
+                "已确认但缺不可逆授权的 spec，人确认后没有补写 irreversible_ok"
+                "（agent 的验收会被护栏永久挡住）")
+        if ires is not None:
+            failures.append("补授权后闸门仍不放行")
+        if not seen_irrev_reason or "不可逆" not in seen_irrev_reason[0]:
+            failures.append(
+                f"闸门没有为不可逆授权停一次（reason={seen_irrev_reason[:1]}）")
+        # 授权已存在 → 直接放行，不再多问一次
+        seen_irrev_reason2: list[str] = []
+
+        def _irrev_gate2(a, r="", c=None):
+            if a == "requirements":
+                seen_irrev_reason2.append(r)
+            return ("continue", None)
+
+        igate2 = mk_loop(irrev_wd, gate=_irrev_gate2)
+        if igate2._requirements_gate() is not None:
+            failures.append("已授权的不可逆契约仍被拦")
+        if seen_irrev_reason2:
+            failures.append(f"已授权的不可逆契约仍多问了闸门：{seen_irrev_reason2}")
 
         # 7) 渲染契约：需求闸门**不能套用缺陷模板**（真实截图上就是这么错的）
         #    前端靠 `action === 'requirements'` 分流，`ctx.defect` 缺失时缺陷模板整块不渲染。

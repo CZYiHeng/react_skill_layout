@@ -427,6 +427,17 @@ def confirm_spec(path: Path) -> dict:
             + (f"（等 {len(pending)} 条）" if len(pending) > 3 else "")
             + "。请先逐条选定，或把它们移入 out_of_scope。")
     data["confirmed"] = True
+    # ★ 人工确认**同时**构成"不可逆验收的批准"。
+    #   为什么必须在这里记录：`run_spec` 现在要求 `require_confirmed=True`，
+    #   而不可逆护栏的条件是 `if require_confirmed and not (allow_irreversible or proj_ok)`。
+    #   若不在确认时写入 `irreversible_ok`，任何含不可逆判据的契约都会在验收阶段被
+    #   永久挡住——那样为了"过验收"就得每次加 `--allow-irreversible`，反而更容易被绕过。
+    #   人在闸门上看到「⚠️ 不可逆 → 验收会真实删改数据，须确认后才执行」并点了确认，
+    #   就是对该条的明确授权。（模型自己不能写这个字段：`write_spec_from_agent` 会剥掉它。）
+    if any(isinstance(u.get("acceptance"), dict)
+           and u["acceptance"].get("irreversible")
+           for u in (data.get("unit") or []) if isinstance(u, dict)):
+        data["irreversible_ok"] = True
     p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return data
 
@@ -807,9 +818,26 @@ def render_report(data: dict, units: list[Unit], evidence: list[Evidence]) -> st
 
 
 def run_spec(spec_path: Path, work_dir: Path,
-             timeout_sec: int = DEFAULT_TIMEOUT_SEC) -> tuple[dict, list[Unit], list[Evidence]]:
-    """端到端：读 spec → 执行 → 返回 (data, units, evidence)。"""
-    data, units = load_spec(spec_path)
+             timeout_sec: int = DEFAULT_TIMEOUT_SEC,
+             allow_irreversible: bool = False,
+             allow_unresolved: bool = False) -> tuple[dict, list[Unit], list[Evidence]]:
+    """端到端：读 spec → 执行 → 返回 (data, units, evidence)。
+
+    **`require_confirmed=True` 是必须的**，不是可选项：
+    验收执行器**真的会跑命令**，而"未确认的契约"意味着这份判据还没被人认可。
+    真实事故：`--verify` 走的是本函数，而 `load_spec()` 的
+    `require_confirmed` 默认 `False`，于是
+      · "未确认不得进入实现"这条**从未生效**（全仓库没有任何调用点传过 True）；
+      · 连带**不可逆护栏也形同虚设**——它的条件是
+        `if require_confirmed and not (allow_irreversible or proj_ok)`，
+        而 `proj_ok` 只能来自 spec 的 `irreversible_ok`（模型不能自己写）。
+        实测：R4 声明了 `irreversible: true` 仍被执行。
+    这里把它钉死为 True；一次性的例外仍可由 `allow_irreversible=True` /
+    `--allow-irreversible` 显式给出。
+    """
+    data, units = load_spec(spec_path, require_confirmed=True,
+                            allow_irreversible=allow_irreversible,
+                            allow_unresolved=allow_unresolved)
     evidence = run_all(units, work_dir, timeout_sec)
     return data, units, evidence
 
