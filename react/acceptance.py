@@ -399,6 +399,11 @@ def confirm_spec(path: Path) -> dict:
 
     刻意做成**独立动作**：确认是人审阅后的决定，不该在 `--verify` 里顺带完成——
     否则"未确认不得进入实现"这条就形同虚设。
+
+    **未决歧义一律不许确认**（真实事故：契约声明 4 条歧义，用户只答了 2 条，
+    点"确认契约并开始"就把 spec 签成了 `confirmed: true`，剩下两条由模型自己猜）。
+    校验放在这里、而不是放在每个界面里——依据 DSH `user-questions` 的约定：
+    "Caught at the asker, where the mistake is, rather than in each UI."
     """
     p = Path(path)
     if not p.is_file():
@@ -411,6 +416,16 @@ def confirm_spec(path: Path) -> dict:
         raise SpecError("requirement-set 顶层必须是对象")
     # 先按未确认模式做一次结构校验：把明显坏掉的 spec 标成"已确认"是最糟的结果
     load_spec(p)
+    # ★ 未决歧义 → 拒绝确认。只校验结构是不够的：结构合法但语义未定，
+    #   实现只能靠猜，而这恰恰是"需求没确认就开始写码"的另一种形态。
+    pending = unresolved_clarifications(data)
+    if pending:
+        ids = "、".join(c.id for c in pending)
+        raise SpecError(
+            f"仍有 {len(pending)} 条歧义未决定（{ids}），不能确认契约："
+            + "；".join(f"{c.id} {c.question}" for c in pending[:3])
+            + (f"（等 {len(pending)} 条）" if len(pending) > 3 else "")
+            + "。请先逐条选定，或把它们移入 out_of_scope。")
     data["confirmed"] = True
     p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return data

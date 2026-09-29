@@ -2876,7 +2876,46 @@ def check_requirements_flow(base_dir: Path) -> list[str]:
         if a2.get("C1") != "a2":
             failures.append(f"单条 resolve 形式失效：{a2}")
 
-        # 6b2) ★ fail-closed：**无人应答时不得替人确认契约**。
+        # 6c) ★ 未决歧义一律不许确认（真实事故）。
+        #     契约声明 4 条歧义，用户只答了 2 条（C1/C2），点"确认契约并开始"
+        #     就把 spec 签成了 `confirmed: true`，剩下两条由模型自己猜——
+        #     而 C3 是"--delete 删保留首次还是全删"、C4 是"是否递归"，都是实现必须知道的语义。
+        #     校验必须在**数据层**（不只 UI 层）：依据 DSH user-questions
+        #     "Caught at the asker, where the mistake is, rather than in each UI."
+        from react.acceptance import SpecError as _SE
+        hang_wd = Path(td) / "unresolvedconfirm"
+        hang_wd.mkdir()
+        hsp = canonical_spec_path(hang_wd)
+        hsp.parent.mkdir(parents=True, exist_ok=True)
+        hsp.write_text(json.dumps({
+            "schema_version": 1, "confirmed": False, "goal": "g",
+            "unit": [{"id": "R1", "statement": "s"}],
+            "clarify": [
+                {"id": "C1", "question": "q1", "options": ["a", "b"], "blocks": ["R1"]},
+                {"id": "C2", "question": "q2", "options": ["a", "b"], "blocks": ["R1"]},
+            ],
+        }, ensure_ascii=False), encoding="utf-8")
+        # 只答 C1，然后要求确认 → 必须拒绝
+        hloop = mk_loop(hang_wd, gate=lambda a, r="", c=None: (
+            "resolve", "C1=a;;[confirm]"))
+        hres = hloop._requirements_gate()
+        after = json.loads(hsp.read_text(encoding="utf-8"))
+        if after.get("confirmed") is True:
+            failures.append("未决歧义（C2 未答）时把契约签成了已确认")
+        if hres is None:
+            failures.append("未决歧义时闸门放行（应拦下并说明缺哪条）")
+        else:
+            txt = str(getattr(hres, "final_text", ""))
+            if "C2" not in txt or "歧义" not in txt:
+                failures.append(f"未决歧义的拒绝没有指出缺哪条：{txt[:70]!r}")
+        # 两条都答完 → 可以确认
+        hloop2 = mk_loop(hang_wd, gate=lambda a, r="", c=None: (
+            "resolve", "C1=a;;C2=b;;[confirm]"))
+        if hloop2._requirements_gate() is not None:
+            failures.append("歧义全部答完后仍无法确认契约")
+        if json.loads(hsp.read_text(encoding="utf-8")).get("confirmed") is not True:
+            failures.append("歧义答完后没有确认契约")
+        _ = _SE
         #      依据 DSH `user-approval` 的生产默认（docs/subsystems/approval.md:21）：
         #      "A missing, non-owning, throwing, or non-conforming answerer becomes
         #      `unavailable` rather than opening the gate."
