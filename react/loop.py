@@ -496,8 +496,12 @@ class StepOutput:
     elapsed_sec: float
     tokens: int
     reasoning: str = ""    # 思考过程（仅部分模型提供，如 kimi 的 reasoning_content）
-    tool_name: str = ""    # 本步调用的工具名（无则空串）
+    tool_name: str = ""    # 本步调用的工具名（无则空串；多个时只记最后一个）
     tool_args: dict | None = None  # 工具参数（已解析；无则 None）
+    #: 本步**全部**工具调用名（原生 tool_calls）。`tool_name` 只留最后一个，
+    #: 而"模型调了工具却没给决策"要靠它识别——否则会被当成"没有决策"而升级成人，
+    #: 弹出一个正文为空的提问（真事故）。
+    tool_names: list[str] | None = None
     usage: dict | None = None  # {prompt, completion, total}
 
 
@@ -655,14 +659,25 @@ class ReActLoop:
                 return LoopResult("aborted", self.context.round_no, "人工中止")
 
             if decision == "ASK":
+                # 提问面板只展示问题本体，去掉决策行
+                question = self._ask_question_text(think_out.parsed)
+                # ★ 防御：**问题正文为空时不得弹提问**。
+                #   真事故（用户截图）：模型调了原生工具、没给决策，于是走到 ASK，
+                #   面板里只有 `[TOOL glob]`、没有任何问题文字，用户被要求回答"空问题"。
+                #   没有正文就没有可回答的东西——如实升级给人，不要让人对着空框猜。
+                if not self._is_answerable_question(question):
+                    tools = "、".join(think_out.tool_names or []) or "（无）"
+                    return LoopResult(
+                        "escalated", self.context.round_no,
+                        "模型给出了空提问（无问题正文），无法回答。"
+                        f"本轮工具调用：{tools}。"
+                        "这通常意味着模型既没给决策也没说明需求——"
+                        "请补充说明或重发任务。")
                 self._ask_count += 1
                 if self._ask_count > _MAX_ASK_TURNS:
                     return LoopResult("escalated", self.context.round_no,
                                       f"模型反复提问超过 {_MAX_ASK_TURNS} 次，移交人工"
                                       "（请直接补充所需信息后再试）")
-                # 提问面板只展示问题本体，去掉决策行
-                question = re.sub(r"下一步[:：].*$", "", think_out.parsed,
-                                  flags=re.MULTILINE).strip()
                 self.render.ask_question(question)
                 answer = self.ask(question) if self.ask is not None else "（自动回答：继续）"
                 if answer is None:
@@ -1287,6 +1302,8 @@ class ReActLoop:
                          elapsed_sec=resp.elapsed_sec, tokens=resp.tokens,
                          reasoning=resp.reasoning,
                          tool_name=resp.tool_name, tool_args=resp.tool_args,
+                         tool_names=[(tc.get("function") or {}).get("name", "")
+                                     for tc in (resp.tool_calls or [])],
                          usage=resp.usage)
 
         # 历史账本：原生工具调用须按 OpenAI 规范回写 assistant(tool_calls)
@@ -1345,13 +1362,47 @@ class ReActLoop:
     # 控制信号解析：工具调用为主，文本解析兜底，自修回路收尾
     # ------------------------------------------------------------------
 
+    def _is_answerable_question(self, question: str) -> bool:
+        """空提问**不可回答**——没有正文就不该弹提问面板。
+
+        独立成方法是为了可断言（守卫直接写在 `_run_loop` 里时没法测）。
+        真事故：模型调了原生工具、没给决策 → 走到 ASK → 面板里只有 `[TOOL glob]`、
+        没有任何问题文字，用户被要求"回答"一个空问题。
+        """
+        return bool((question or "").strip())
+
+    def _ask_question_text(self, parsed: str) -> str:
+        """从一步输出里取出要问人的**问题正文**（去掉决策行）。
+
+        独立成方法是为了可断言：**没有正文就不该弹提问**（真事故里模型调了工具、
+        没有决策，前端弹出一个只有 `[TOOL glob]`、毫无问题文字的面板，
+        用户被要求"回答"一个空问题）。空串由 `_run_loop` 拦下并如实升级给人。
+        """
+        return re.sub(r"下一步[:：].*$", "", parsed or "",
+                      flags=re.MULTILINE).strip()
+
     def _decision_extract(self, out: StepOutput) -> tuple[str, bool]:
         """从一步输出取出 THINK 决策：(值, 是否命中)。工具优先，文本兜底。"""
         if out.tool_name == "decide_next_step":
             d = str((out.tool_args or {}).get("decision", "")).upper()
             if d in _DECISIONS:
                 return d, True
-        return parse_decision(out.raw)
+        # ① 文本里的**显式决策优先**：模型既调了工具又写了 `下一步: PLAN` 时，
+        #    要以它自己声明的决策为准（工具调用只是它顺手做的事）。
+        value, hit = parse_decision(out.raw)
+        if hit:
+            return value, True
+        # ② 模型**调用了工具却没给决策**时，不得升级成人。
+        #    真事故（用户截图）：模型输出原生工具调用 `glob`（没有 `下一步:` 行）
+        #    → `parse_decision` 未命中 → `_resolve` 自修 → 最终 ESCALATE
+        #    → 前端渲染成 ASK 面板，而**问题正文是空的**（只有 `[TOOL glob]`），
+        #    用户被要求回答一个没有内容的提问。
+        #    两条协议（原生工具调用 / 文本决策）打架：既然后端**已经执行**了那个工具，
+        #    它就是一个动作，等价于 ACT——继续下一轮让模型自己看回执再决策。
+        #    防死循环由 repeat-tool-reminder（同调用同参数计数）与 max_rounds 兜底。
+        if getattr(out, "tool_names", None):
+            return "ACT", True
+        return value, hit
 
     def _verdict_extract(self, out: StepOutput) -> tuple[str, bool]:
         """从一步输出取出 OBSERVE/VERIFY 判定：(值, 是否命中)。工具优先，文本兜底。"""

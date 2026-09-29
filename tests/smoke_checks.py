@@ -3002,6 +3002,56 @@ def check_requirements_flow(base_dir: Path) -> list[str]:
                     failures.append(
                         "doResolve 在 catch 块之外关闭闸门（点一下就关的老行为）")
 
+        # 6f) ★ 模型调用工具但没给决策时，不得升级成人；空提问不得弹出。
+        #     真事故（用户截图）：模型输出原生工具调用 `glob`（无 `下一步:` 行）
+        #     → parse_decision 未命中 → 自修 → ESCALATE → 前端渲染成 ASK 面板，
+        #     而**问题正文是空的**（只有 [TOOL glob]），用户被要求回答空问题。
+        import types as _t3
+        from react.loop import StepOutput as _SO3
+        noask_wd = Path(td) / "notooldecision"
+        noask_wd.mkdir()
+        nal = mk_loop(noask_wd)
+        out_tool = _SO3(action="think", raw="", parsed="",
+                        elapsed_sec=0.0, tokens=1,
+                        tool_name="glob", tool_names=["glob"])
+        dec, hit = nal._decision_extract(out_tool)
+        if not hit or dec != "ACT":
+            failures.append(
+                f"模型调了工具却没给决策时被当成失败（decision={dec}, hit={hit}）"
+                "——会升级成人并弹出空提问")
+        # 没有工具调用、也没有决策行 → 仍应走安全默认（不得乐观通过）
+        out_none = _SO3(action="think", raw="（模型什么也没说）", parsed="",
+                        elapsed_sec=0.0, tokens=1)
+        dec2, hit2 = nal._decision_extract(out_none)
+        if hit2 or dec2 != "ESCALATE":
+            failures.append(f"无工具无决策时未走安全默认：decision={dec2}, hit={hit2}")
+        # 显式决策仍优先于"有工具调用"
+        out_both = _SO3(action="think", raw="下一步: PLAN", parsed="下一步: PLAN",
+                        elapsed_sec=0.0, tokens=1,
+                        tool_name="read", tool_names=["read"])
+        dec3, hit3 = nal._decision_extract(out_both)
+        if not hit3 or dec3 != "PLAN":
+            failures.append(f"有工具调用时显式决策被覆盖：{dec3}, hit={hit3}")
+        # 空提问必须被拦下（防御）
+        # 空提问必须被拦下（防御）：问题正文为空时不得弹提问
+        q_empty = nal._ask_question_text("")
+        q_only_decision = nal._ask_question_text("下一步: ASK")
+        q_real = nal._ask_question_text("[THOUGHT] 我不确定\n\n要保留几列？\n下一步: ASK")
+        if q_empty != "":
+            failures.append(f"空输出应得到空提问正文，实际 {q_empty!r}")
+        if q_only_decision != "":
+            failures.append(f"只有决策行时应得到空提问正文，实际 {q_only_decision!r}")
+        if "要保留几列" not in q_real or "下一步" in q_real:
+            failures.append(f"提问正文抽取不对：{q_real!r}")
+        # 空提问必须被判为"不可回答"（守卫据此拦下）
+        if nal._is_answerable_question(q_empty):
+            failures.append("空提问被判成可回答（会弹出空面板）")
+        if nal._is_answerable_question(q_only_decision):
+            failures.append("只有决策行的提问被判成可回答（会弹出空面板）")
+        if not nal._is_answerable_question(q_real):
+            failures.append("正常提问被判成不可回答（会被误拦）")
+        _ = _t3
+
         # 6c) ★ 未决歧义一律不许确认（真实事故）。
         #     契约声明 4 条歧义，用户只答了 2 条（C1/C2），点"确认契约并开始"
         #     就把 spec 签成了 `confirmed: true`，剩下两条由模型自己猜——
