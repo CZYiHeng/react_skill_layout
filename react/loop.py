@@ -520,6 +520,12 @@ class ReActLoop:
     work_dir: Path | None = None
     #: 框架根目录（兜底用）
     base_dir: Path | None = None
+    #: 当前能力名（用于闸门判断"这套 skill 会不会产 requirement-set"）
+    capability_name: str = ""
+    #: 当前能力是否具备需求契约约定（coding 有；default 没有）
+    capability_spec_capable: bool = False
+    #: 需求闸门的"能力不产 spec"告警只发一次（避免每轮重复打断）
+    _req_warned: bool = field(default=False, init=False)
     #: 人工闸门档位：auto=仅必须拦时（默认）/ step=每步骤一次 / plan=计划批准一次
     #: / phase=每阶段一次（旧行为，回滚开关）
     gate_mode: str = "auto"
@@ -1016,6 +1022,25 @@ class ReActLoop:
 
         if data.get("_broken") is None and spec.is_file() and is_confirmed(data) and not pending:
             return None   # 已有确认过的契约且无未决歧义 → 放行
+
+        # ★ 不产 spec 的能力（default）：**只告警一次就放行**，不要反复拦。
+        #   需求闸门是能力无关的前置条件，但它要求的动作（调 submit_requirements、
+        #   按判据验收）只写在 coding 的 SKILL.md 里。跑 default 时就是"拦了人却没人能干活"
+        #   ——真实运行里连续问了 4 次，每次只能重复同一句。
+        #   ⚠️ 顺序要紧：**必须排在 `_broken` 检查之后**。放前面时，"第一次遇到坏 spec"
+        #   会因为尚未告警过而走进这个分支 → 把读不懂的契约放行。
+        if (self.capability_spec_capable is False and not self._req_warned
+                and not data.get("_broken")):
+            self._req_warned = True
+            self.render.warn(
+                "当前能力不具备需求契约约定（当前：%s）。"
+                "本次运行不会有 requirement-set、逐条验收与覆盖表。"
+                "要完整链路请在侧栏把「能力」切到 coding。"
+                % (self.capability_name or "default"))
+            self.context.add_user(
+                "（框架提示：当前能力不产 requirement-set，本次按常规方式执行；"
+                "如需判据契约与逐条验收，请切换能力到 coding。）")
+            return None
 
         ctx = {
             "spec_path": str(spec),

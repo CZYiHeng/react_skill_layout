@@ -256,6 +256,17 @@ export default function App() {
       dispatch({ type: 'error', message: e.message }))
     dispatch({ type: 'consumed' })
   }
+  // 切换能力：写进配置（下次任务起生效），并刷新本地会话状态。
+  // 能力决定"这次跑哪套 skill"，所以改完必须让侧栏的生效标记立刻跟上。
+  const changeCapability = (name) => {
+    if (!state.config) return
+    api.saveConfig({ ...state.config, active_capability: name })
+      .then(() => api.getConfig())
+      .then((d) => {
+        dispatch({ type: 'config_update', config: api.normalizeConfig(d.config || {}) })
+      })
+      .catch((e) => dispatch({ type: 'error', message: `切换能力失败：${e.message}` }))
+  }
   // 需求闸门：点某个歧义选项 → 立刻落盘成契约（text 形如 `C1=文件内`），
   // 不必再手敲 `--resolve`
   const doResolve = (cid, answer) => {
@@ -452,6 +463,9 @@ export default function App() {
         workDir={state.workDir}
         onWorkDir={(dir) => dispatch({ type: 'work_dir', workDir: dir })}
         allowOutside={state.allowOutside}
+        capability={state.capability}
+        capabilities={state.capabilities}
+        onCapability={changeCapability}
         onAllowOutside={(v) => {
           dispatch({ type: 'allow_outside', allowOutside: v })
           if (state.config) {

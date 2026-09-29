@@ -2609,14 +2609,16 @@ def check_requirements_flow(base_dir: Path) -> list[str]:
     reg = ActionRegistry()
     reg.load(base_dir / "capabilities" / "coding")
 
-    def mk_loop(wd: Path, gate=None):
+    def mk_loop(wd: Path, gate=None, spec_capable=True):
         return ReActLoop(
             reg, SessionContext(max_rounds=3), MockClient(),
             RichRenderer(None, show_reasoning=False),
             gate=gate or (lambda a, r="", c=None: ("continue", None)),
             # MockClient 靠 `"冒烟回答" in history` 判断"已经问过了"（见 react/model.py）；
             # 答案不含这四个字，它会一直停在 ASK，六次后 escalated，**根本走不到闸门**。
-            ask=lambda q: "冒烟回答：输入已确认", work_dir=wd, base_dir=base_dir)
+            ask=lambda q: "冒烟回答：输入已确认", work_dir=wd, base_dir=base_dir,
+            # 默认按"具备需求契约约定"（= coding）建；不产 spec 的能力另有断言覆盖
+            capability_name="coding", capability_spec_capable=spec_capable)
 
     with tempfile.TemporaryDirectory() as td:
         wd = Path(td)
@@ -2835,6 +2837,85 @@ def check_requirements_flow(base_dir: Path) -> list[str]:
         if '"resolve"' not in src_web:
             failures.append("api_control 白名单不含 resolve（前端点了会被 400 拒）")
         _ = _insp
+
+        # 8) ★ 不产 spec 的能力（default）：**只告警一次就放行**，不要反复拦。
+        #    真实运行里 default 能力被连问 4 次，每次只能重复同一句——"拦了人却没人能干活"。
+        from react.context import SessionContext as _SC2
+        nospec_wd = Path(td) / "nospec"
+        nospec_wd.mkdir()
+        warns: list[str] = []
+        nloop = ReActLoop(
+            reg, _SC2(max_rounds=3), MockClient(),
+            RichRenderer(None, show_reasoning=False),
+            gate=lambda a, r="", c=None: ("continue", None),
+            ask=lambda q: "冒烟回答：输入已确认",
+            work_dir=nospec_wd, base_dir=base_dir,
+            capability_name="default", capability_spec_capable=False)
+        nloop.render = type("R", (), {
+            "warn": staticmethod(warns.append),
+            "info": staticmethod(lambda *a, **k: None),
+            "print": staticmethod(lambda *a, **k: None)})()
+        r1 = nloop._requirements_gate()
+        r2 = nloop._requirements_gate()
+        r3 = nloop._requirements_gate()
+        if r1 is not None or r2 is not None or r3 is not None:
+            failures.append("不产 spec 的能力被闸门反复拦住（应只告警一次后放行）")
+        if len(warns) != 1:
+            failures.append(f"「能力不产 spec」的告警应只发一次，实际 {len(warns)} 次")
+        elif "coding" not in warns[0]:
+            failures.append(f"告警没告诉用户该切到哪个能力：{warns[0][:60]!r}")
+        # 但**坏 spec 仍必须拦**——即使能力不产 spec，读到一份坏契约也不许装作没有
+        b2 = Path(td) / "nospec_broken"
+        b2.mkdir()
+        bp2 = canonical_spec_path(b2)
+        bp2.parent.mkdir(parents=True, exist_ok=True)
+        bp2.write_text("{ 坏", encoding="utf-8")
+        nloop2 = ReActLoop(
+            reg, _SC2(max_rounds=3), MockClient(),
+            RichRenderer(None, show_reasoning=False),
+            gate=lambda a, r="", c=None: ("continue", None),
+            ask=lambda q: "冒烟回答：输入已确认",
+            work_dir=b2, base_dir=base_dir,
+            capability_name="default", capability_spec_capable=False)
+        if nloop2._requirements_gate() is None:
+            failures.append("不产 spec 的能力下，坏掉的 spec 被放行了（应仍拦下）")
+
+        # 9) 侧栏能力下拉（用户反馈"页面上没有选 coding 的地方"）
+        side = (base_dir / "web" / "src" / "components" / "Sidebar.jsx").read_text(
+            encoding="utf-8")
+        # 不只看标识符存在——必须真的把它接到 onChange（破坏可以留着 props 不接）
+        if "onChange={(e) => onCapability?.(e.target.value)}" not in side:
+            failures.append("侧栏能力下拉没接到 onCapability（选了不生效）")
+        if "<select" not in side or "capabilities || " not in side:
+            failures.append("侧栏没有渲染能力下拉（缺 select 或清单兜底）")
+        if "active_capability" not in app_js:
+            failures.append("App 没有提交 active_capability（选了也不生效）")
+
+        # 9b) ★ "会不会产 spec"必须**按能力声明判定**，不能恒真/恒假。
+        #     恒真时 default 也被当成会产 spec → 又变成"拦了却没人能干活"。
+        from react.capability import probe as _probe
+        from react.config import DEFAULTS as _DEF
+        from react.service import ReactService as _SVC
+        _coding = _probe(base_dir / "capabilities" / "coding", name="coding")
+        _default = _probe(base_dir / "skills", name="default")
+
+        def _spec_capable(cap):
+            svc = _SVC.__new__(_SVC)
+            svc.capability = cap
+            svc.cfg = dict(_DEF)
+            return svc._capability_spec_capable()
+
+        if not _spec_capable(_coding):
+            failures.append("coding 应被判定为'会产 spec'（它有 acceptance/verify_command）")
+        if _spec_capable(_default):
+            failures.append("default 被判成'会产 spec'（它没有任何契约约定）——会又空拦一遍")
+
+        # 10) default 的 OBSERVE 必须要求核对真实产物
+        #     （真实运行病根：只读被截断的正文 → 判不准 → act/observe 空转 32:9）
+        obs = (base_dir / "skills" / "observe" / "SKILL.md").read_text(encoding="utf-8")
+        for token in ("必须核对真实产物", "截断", "exit="):
+            if token not in obs:
+                failures.append(f"default 的 OBSERVE 缺少「{token}」要求（会只读被截断的正文）")
     return failures
 
 

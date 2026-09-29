@@ -22,6 +22,7 @@ export default function Sidebar({
   config, binds, status, gateMode, onGateMode, workDir, onWorkDir,
   allowOutside, onAllowOutside, onPause, onAbort, onReset, onSave, onSettings,
   totalTokens, onSwitchModel, onReview, variants, activeVariants, onVariant,
+  capability, capabilities, onCapability,
 }) {
   const running = status === 'running'
   const shellOn = !!config?.shell
@@ -62,6 +63,32 @@ export default function Sidebar({
 
       <div className="side-card">
         <div className="group-label">闸门与目录</div>
+        {/* 能力选择放在侧栏（而不是埋在设置里）：它就是"这次跑哪套 skill"，
+            与闸门/目录同级——此前藏在设置深处，导致用户一直在跑 default 而不知道。 */}
+        <div className="field">
+          <label>
+            能力
+            {(capabilities || []).length <= 1 ? (
+              <span className="label-warn">（只有一个可用）</span>
+            ) : null}
+          </label>
+          <select
+            value={capability?.name || 'default'}
+            onChange={(e) => onCapability?.(e.target.value)}
+          >
+            {(capabilities || [{ name: 'default', description: '仓库内置' }]).map((c) => (
+              <option key={c.name} value={c.name}>
+                {c.name}
+                {c.conventions ? `（${c.conventions} 条约定）` : '（无约定）'}
+              </option>
+            ))}
+          </select>
+          <small className="field-hint">
+            {capability?.conventions
+              ? `生效：${capability.name} v${capability.version || '-'} · ${capability.conventions} 条约定`
+              : `生效：${capability?.name || 'default'}（无约定）——不带判据契约与逐条验收`}
+          </small>
+        </div>
         <div className="field">
           <label>闸门档位</label>
           <select value={gateMode} onChange={(e) => onGateMode?.(e.target.value)}>

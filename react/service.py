@@ -442,6 +442,16 @@ class ReactService:
             except KeyError as e:
                 registry.warnings.append(f"{e}；已回退默认")
 
+    def _capability_spec_capable(self) -> bool:
+        """当前能力是否具备"需求契约"约定（会产 requirement-set、按判据验收）。
+
+        判据不是能力名，而是它的声明：`coding` 的 conventions 里有 `acceptance` 与
+        `verify_command`；`default` 一条都没有。这样新增能力时**不必改代码**——
+        只要在 capability.json 里声明了契约相关约定，闸门就按"会产 spec"对待。
+        """
+        conv = self.capability.conventions or {}
+        return bool(conv.get("acceptance") or conv.get("verify_command"))
+
     def _build_env_info(self) -> str:
         """构造运行环境信息文本，拼进每步 system 提示，避免模型在真空中默认 Linux。"""
         import platform
@@ -610,6 +620,9 @@ class ReactService:
             # 需求契约在 <work_dir>/.react-agent/spec.json —— 必须把工作目录交给 loop，
             # 否则那个闸门找不到 spec，只能退回 base_dir（错的目录）
             work_dir=self.work_dir, base_dir=self.base_dir,
+            # 能力名与"会不会产 spec"：闸门据此决定是拦人还是只告警（default 不产 spec）
+            capability_name=self.capability.name,
+            capability_spec_capable=self._capability_spec_capable(),
         )
         return Runtime(loop=loop, context=context, registry=registry,
                        executor=executor, control=control)
