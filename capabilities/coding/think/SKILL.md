@@ -42,6 +42,25 @@ description: THINK 阶段（代码档案）——分析当前状态与代码意�
 | 数值/阈值没给，而它决定行为 | 超时、批量大小、"大量"是多少 |
 | **范围/边界**词没界定 | "所有"、"重复的"、"最新的" |
 
+## 标出不可逆判据（会真删数据的那种）
+
+如果某条验收判据**执行时会真实删除或覆盖数据**（比如 `--delete` 的验收），
+必须在它的 `acceptance` 里加 `"irreversible": true`：
+
+```jsonc
+"acceptance": {
+  "kind": "command",
+  "run": "python -m csvdup --delete data/",
+  "expect": "exit_code == 0",
+  "irreversible": true
+}
+```
+
+**为什么必须标**：验收执行器是**真的跑**命令，不是模拟——没标的不可逆命令会被直接执行，
+删掉的是用户的真实文件。标了之后，未确认前 `--verify` **一律拒绝执行**，
+人要用 `irreversible_ok: true` 或 `--allow-irreversible` 显式确认。这条护栏也保护你自己：
+验收删掉测试数据后，后续步骤可能就没得测了。
+
 **与 ASK 的分工**：
 
 - `ASK` 用来**拿到答案**（你确实需要问人）

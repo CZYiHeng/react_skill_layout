@@ -53,12 +53,18 @@ class SpecError(ValueError):
 
 @dataclass
 class Acceptance:
-    """一条验收判据。`kind=command` 必须给 run；`kind=predicate` 必须给 predicate。"""
+    """一条验收判据。`kind=command` 必须给 run；`kind=predicate` 必须给 predicate。
+
+    `irreversible=True` 表示**执行这条判据会真实删除/覆盖数据且不可恢复**。
+    为什么需要它：验收执行器是**真的跑**命令，不是模拟——`python -m csvdup --delete <dir>`
+    会真的删掉用户的文件。声明了不可逆的条目，未经显式确认一律不执行。
+    """
 
     kind: str
     run: str = ""
     expect: str = ""
     predicate: dict = field(default_factory=dict)
+    irreversible: bool = False
 
 
 @dataclass
@@ -123,7 +129,8 @@ class Evidence:
 
 
 def load_spec(path: Path, *, require_confirmed: bool = False,
-              allow_unresolved: bool = False) -> tuple[dict, list[Unit]]:
+              allow_unresolved: bool = False,
+              allow_irreversible: bool = False) -> tuple[dict, list[Unit]]:
     """读并校验 requirement-set。返回 (原始 dict, 单元列表)。
 
     校验刻意严格：**判据不完整就必须报出来**（G1），而不是让它在实现阶段被悄悄跳过。
@@ -135,6 +142,10 @@ def load_spec(path: Path, *, require_confirmed: bool = False,
     `allow_unresolved=False`（默认）时，**有未答的 `clarify` 条目一律拒绝**。
     歧义不解决就往实现走，等于让实现者替你选一个解读——而那正是"猜需求"。
     确实要先跑一次时可以 `allow_unresolved=True`，此时结论里必须标出"带着未决歧义运行"。
+
+    `allow_irreversible=False`（默认）时，**声明 `irreversible` 的判据一律不执行**。
+    验收执行器是真跑命令：`--delete` 会真的删掉用户的文件。确认方式是在 spec 里设
+    `irreversible_ok: true`，或显式传 `allow_irreversible=True`。
     """
     p = Path(path)
     if not p.is_file():
@@ -197,6 +208,7 @@ def load_spec(path: Path, *, require_confirmed: bool = False,
         if kind == "command":
             run = str(acc_raw.get("run", "")).strip()
             expect = str(acc_raw.get("expect", "")).strip()
+            irrev = bool(acc_raw.get("irreversible", False))
             missing = []
             if not run:
                 missing.append("run")
@@ -209,7 +221,8 @@ def load_spec(path: Path, *, require_confirmed: bool = False,
             else:
                 units.append(Unit(id=uid, statement=stmt, artifacts=art_list,
                                   acceptance=Acceptance(kind="command", run=run,
-                                                        expect=expect)))
+                                                        expect=expect,
+                                                        irreversible=irrev)))
         elif kind == "predicate":
             pred = acc_raw.get("predicate")
             if not isinstance(pred, dict) or not pred:
@@ -218,7 +231,10 @@ def load_spec(path: Path, *, require_confirmed: bool = False,
                     unverifiable="acceptance.kind=predicate 缺少 predicate 对象"))
             else:
                 units.append(Unit(id=uid, statement=stmt, artifacts=art_list,
-                                  acceptance=Acceptance(kind="predicate", predicate=pred)))
+                                  acceptance=Acceptance(
+                                      kind="predicate", predicate=pred,
+                                      irreversible=bool(acc_raw.get("irreversible",
+                                                                    False)))))
         else:
             units.append(Unit(
                 id=uid, statement=stmt, artifacts=art_list,
@@ -264,7 +280,27 @@ def load_spec(path: Path, *, require_confirmed: bool = False,
                 "请用 `--resolve <ID> <选择>`（两个参数，空格分隔）落盘决定"
                 "（确实要先跑一次可加 `--allow-unresolved`，结论会标出这一点）")
 
+    # ---- 不可逆判据：未经显式确认一律不执行 ----
+    # spec 里 `irreversible_ok: true` 是**项目级确认**（比每跑一次都加参数更适合
+    # "这个项目的验收本来就含删改"的场景）；显式参数则适合一次性运行。
+    proj_ok = bool(data.get("irreversible_ok", False))
+    if require_confirmed and not (allow_irreversible or proj_ok):
+        irrev = [u for u in units
+                 if u.acceptance is not None and u.acceptance.irreversible]
+        if irrev:
+            detail = "；".join(f"{u.id}: {u.acceptance.run[:50]}" for u in irrev[:3])
+            raise SpecError(
+                f"有 {len(irrev)} 条判据声明为**不可逆**（会真实删除/覆盖数据），"
+                f"未经确认不得执行：{detail}。"
+                "验收执行器是**真的跑**命令、不是模拟——删掉的用户数据无法恢复。"
+                "确认请在 spec 里设 `irreversible_ok: true`，或加 `--allow-irreversible`")
+
     return data, units
+
+
+def irreversible_units(units: list[Unit]) -> list[Unit]:
+    """会真实删改数据的条目。"""
+    return [u for u in units if u.acceptance is not None and u.acceptance.irreversible]
 
 
 def clarifications(data: dict) -> list[Clarification]:
@@ -669,6 +705,12 @@ def render_report(data: dict, units: list[Unit], evidence: list[Evidence]) -> st
         lines.append("已解决的歧义（决定已落盘为契约）：")
         for c in resolved:
             lines.append(f"- {c.id}：{c.question} → **{c.answer}**")
+    irrev = irreversible_units(units)
+    if irrev:
+        lines.append("")
+        lines.append("⚠️ 本次执行含**不可逆**判据（真实删改数据）：")
+        for u in irrev:
+            lines.append(f"- {u.id}：`{u.acceptance.run}`")
     if oos:
         lines.append("")
         lines.append("明确不做（`out_of_scope`）：")
@@ -737,6 +779,9 @@ def finalize(data: dict, units: list[Unit], evidence: list[Evidence],
         # ——它可能只是恰好满足了实现者自己选的那个解读。
         "unresolved": [{"id": c.id, "question": c.question, "blocks": c.blocks}
                        for c in pending],
+        # 本条跑过的不可逆判据也要留痕：交付物要能看出"这次验收真的删过东西"
+        "irreversible": [{"id": u.id, "run": u.acceptance.run}
+                         for u in irreversible_units(units)],
         "resolved": [{"id": c.id, "answer": c.answer, "decided_at": c.decided_at}
                      for c in clarifications(data) if c.resolved],
     }

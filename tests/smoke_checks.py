@@ -2351,6 +2351,68 @@ def check_clarification_gate(base_dir: Path) -> list[str]:
         rep = render_report(data3, units3, ev3)
         if "已解决的歧义" not in rep or "文件内" not in rep:
             failures.append("覆盖表未写出已决决定（交付物看不出需求被如何解释）")
+
+        # ---- 不可逆判据：未确认一律不执行 ----
+        # 验收执行器是**真的跑**命令：`--delete` 会真删用户的文件，所以必须有护栏。
+        from react.acceptance import irreversible_units
+
+        victim = w / "victim.txt"
+
+        def write_irr(ok_flag=None):
+            spec = {
+                "schema_version": 1, "confirmed": True, "goal": "不可逆测试",
+                "clarify": [],
+                "unit": [{
+                    "id": "R1", "statement": "会真删文件",
+                    "acceptance": {
+                        "kind": "command",
+                        "run": ("python -c \"import os; os.remove(r'"
+                                + str(victim) + "')\""),
+                        "expect": "exit_code == 0",
+                        "irreversible": True},
+                }],
+                "out_of_scope": [],
+            }
+            if ok_flag is not None:
+                spec["irreversible_ok"] = ok_flag
+            spec_p.write_text(json.dumps(spec, ensure_ascii=False, indent=2),
+                              encoding="utf-8")
+
+        # 默认必须拒绝，且**文件不能被动**
+        victim.write_text("don't delete me", encoding="utf-8")
+        write_irr()
+        try:
+            load_spec(spec_p, require_confirmed=True)
+            failures.append("不可逆判据未被拦（会真删用户数据）")
+        except SpecError:
+            pass
+        if not victim.is_file():
+            failures.append("被拒绝的不可逆判据竟然执行了（文件已被删）")
+        # 显式允许 → 放行
+        try:
+            load_spec(spec_p, require_confirmed=True, allow_irreversible=True)
+        except SpecError as e:
+            failures.append(f"显式允许后仍被拒：{e}")
+        # 项目级确认 → 放行
+        write_irr(True)
+        try:
+            load_spec(spec_p, require_confirmed=True)
+        except SpecError as e:
+            failures.append(f"irreversible_ok=true 后仍被拒：{e}")
+        # 识别要正确
+        _, u_irr = load_spec(spec_p, require_confirmed=True)
+        if len(irreversible_units(u_irr)) != 1:
+            failures.append("irreversible 条目未被识别")
+        # 非不可逆不该被拦
+        write_irr()
+        spec_obj = json.loads(spec_p.read_text(encoding="utf-8"))
+        spec_obj["unit"][0]["acceptance"].pop("irreversible")
+        spec_p.write_text(json.dumps(spec_obj, ensure_ascii=False), encoding="utf-8")
+        _, u_ro = load_spec(spec_p, require_confirmed=True)
+        if irreversible_units(u_ro):
+            failures.append("普通判据被误判为不可逆")
+        if victim.is_file():
+            victim.unlink()
     return failures
 
 

@@ -19,7 +19,8 @@ for _stream in (sys.stdout, sys.stderr, sys.stdin):
 from rich.console import Console
 
 from react.acceptance import (SpecError, canonical_spec_path, clarifications,
-                              confirm_spec, draft_spec, finalize, load_spec,
+                              confirm_spec, draft_spec, finalize,
+                              irreversible_units, load_spec,
                               resolve_clarification, run_all, run_spec,
                               unresolved_clarifications, write_draft)
 from react.action import ACTION_NAMES, DEFAULT_VARIANT, ActionRegistry
@@ -315,7 +316,8 @@ def cmd_new_capability(name: str, console: Console, base_dir: Path = BASE_DIR,
 
 
 def cmd_verify(spec: Path, work_dir: Path | None, out_dir: Path | None,
-               console: Console, *, allow_unresolved: bool = False) -> int:
+               console: Console, *, allow_unresolved: bool = False,
+               allow_irreversible: bool = False) -> int:
     """`--verify`：按 requirement-set 逐条执行验收判据，产出覆盖表与缺口清单。
 
     这是"完成判据是系统概念"的落地入口——**不调用模型**，判据由上游「需求」能力提供。
@@ -343,7 +345,8 @@ def cmd_verify(spec: Path, work_dir: Path | None, out_dir: Path | None,
         # 默认要求已确认 + 无未决歧义：未确认的只是提议，带歧义的"通过"可能只是
         # 恰好满足了某个自选解读。两者都不得进入实施。
         data, units = load_spec(spec_path, require_confirmed=True,
-                                allow_unresolved=allow_unresolved)
+                                allow_unresolved=allow_unresolved,
+                                allow_irreversible=allow_irreversible)
         evidence = run_all(units, resolved)
     except SpecError as e:
         # spec 不合法是**配置错误**，不是"验收失败"——分开报，别让用户以为是代码的问题
@@ -353,6 +356,10 @@ def cmd_verify(spec: Path, work_dir: Path | None, out_dir: Path | None,
     if allow_unresolved and unresolved_clarifications(data):
         console.print("[yellow]⚠ 带着未决歧义运行——「通过」可能只是满足了某个自选解读，"
                       "不等于需求真的被满足。[/yellow]")
+    irrev = irreversible_units(units)
+    if irrev and (allow_irreversible or data.get("irreversible_ok")):
+        console.print(f"[yellow]⚠ 将执行 {len(irrev)} 条不可逆判据"
+                      f"（真实删改数据）：{','.join(u.id for u in irrev)}[/yellow]")
     verdict = finalize(data, units, evidence, out)
     for e in evidence:
         mark = {"pass": "[green]✅[/green]", "fail": "[red]❌[/red]",
@@ -574,6 +581,9 @@ def main() -> None:
     parser.add_argument("--allow-unresolved", action="store_true",
                         help="--verify 时允许带着未决歧义运行（结论会标出这一点，"
                              "因为此时「通过」可能只是恰好满足了某个自选解读）")
+    parser.add_argument("--allow-irreversible", action="store_true",
+                        help="--verify 时允许执行声明为 irreversible 的判据"
+                             "（会真实删除/覆盖数据；也可在 spec 里设 irreversible_ok: true）")
     parser.add_argument("--smoke", action="store_true", help="冒烟测试（Mock 模型，零 API 消耗）")
     parser.add_argument("--smoke-live", action="store_true", help="冒烟测试（真实 kimi API）")
     parser.add_argument("--new-capability", metavar="名字",
@@ -606,7 +616,8 @@ def main() -> None:
         cmd_check(console, skills_dir)
     elif args.verify is not None:
         sys.exit(cmd_verify(args.verify, args.verify_dir, args.verify_out, console,
-                            allow_unresolved=args.allow_unresolved))
+                            allow_unresolved=args.allow_unresolved,
+                            allow_irreversible=args.allow_irreversible))
     elif args.intake:
         sys.exit(cmd_intake(args.intake, args.verify_dir, console))
     elif args.confirm_spec:
